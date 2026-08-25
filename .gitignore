@@ -1,0 +1,12 @@
+node_modules/
+dist/
+artifacts/
+runs/
+state/
+.env
+.env.local
+__pycache__/
+*.pyc
+*.pt
+.venv/
+.DS_Store
