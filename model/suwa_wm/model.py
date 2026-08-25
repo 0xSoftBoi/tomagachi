@@ -1,113 +1,210 @@
-"""SUWA-WM: a small action-conditioned latent world model.
+"""SUWA-WM — a world model of the on-chain market.
 
-Not an LLM. The design follows the open world-model lineage — latent dynamics
-in the spirit of Dreamer's RSSM, with a non-generative JEPA-style objective
-(predict the *embedding* of the next observation, not its pixels), plus a
-variance term to keep the latent space from collapsing. Reward and continuation
-heads make the learned latent usable for planning.
+Not an LLM. It never sees text. It watches the joint state of every asset
+Suwappu routes through and learns how that state evolves.
 
-Small on purpose: v0 trains on CPU minutes, so every fed stablecoin converts
-into visible learning. Scale comes from community compute, epoch by epoch.
+    AssetEncoder     per-asset temporal features -> embedding
+    CrossAssetBlock  assets attend to each other (BTC moving is context for SOL)
+    Predictor        JEPA head: predict the EMBEDDING of the future, not prices
+    ExecutionHeads   forward drift and forward volatility, with calibrated sigma
+
+The pretraining objective is joint-embedding predictive (JEPA): encode a
+context window, predict the representation of the window that follows, against
+an EMA target encoder. Nothing is reconstructed — predicting raw prices would
+force the model to waste capacity on unpredictable noise, which is exactly the
+failure mode in a market.
 """
 
 from __future__ import annotations
+
+import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .world import ACTIONS, CHANNELS, GRID
-
-EMBED = 128
-HIDDEN = 256
+D_MODEL = 96
+N_HEADS = 4
 
 
-class Encoder(nn.Module):
-    def __init__(self):
+class AssetEncoder(nn.Module):
+    """Per-asset temporal encoder. Shared weights across assets, so the model
+    learns market dynamics rather than memorising individual tickers."""
+
+    def __init__(self, n_features: int, d_model: int = D_MODEL):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Conv2d(CHANNELS, 32, 3, padding=1), nn.SiLU(),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.SiLU(),
-            nn.Conv2d(64, 64, 3, stride=2, padding=1), nn.SiLU(),
-            nn.Flatten(),
-            nn.Linear(64 * (GRID // 4) * (GRID // 4), EMBED),
+            nn.Conv1d(n_features, 64, kernel_size=5, padding=2), nn.SiLU(),
+            nn.Conv1d(64, 96, kernel_size=5, stride=2, padding=2), nn.SiLU(),
+            nn.Conv1d(96, d_model, kernel_size=3, stride=2, padding=1), nn.SiLU(),
         )
+        self.norm = nn.LayerNorm(d_model)
 
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.net(obs)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: [B, A, T, F] -> [B, A, D]"""
+        B, A, T, Fdim = x.shape
+        h = x.permute(0, 1, 3, 2).reshape(B * A, Fdim, T)
+        h = self.net(h)             # [B*A, D, T']
+        h = h.mean(dim=-1)          # temporal pool
+        return self.norm(h).view(B, A, -1)
 
 
-class Dynamics(nn.Module):
-    """GRU over (embedding, action) -> belief state h; heads predict the next
-    embedding, the reward, and episode continuation from h."""
+class CrossAssetBlock(nn.Module):
+    """Assets attend to each other: this is what makes it a *market* model
+    rather than N independent single-asset models."""
 
-    def __init__(self):
+    def __init__(self, d_model: int = D_MODEL, n_heads: int = N_HEADS):
         super().__init__()
-        self.action_embed = nn.Embedding(ACTIONS, 32)
-        self.cell = nn.GRUCell(EMBED + 32, HIDDEN)
-        self.next_embed = nn.Sequential(
-            nn.Linear(HIDDEN, HIDDEN), nn.SiLU(), nn.Linear(HIDDEN, EMBED)
+        self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.n1 = nn.LayerNorm(d_model)
+        self.n2 = nn.LayerNorm(d_model)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_model * 2), nn.SiLU(), nn.Linear(d_model * 2, d_model)
         )
-        self.reward = nn.Sequential(nn.Linear(HIDDEN, 64), nn.SiLU(), nn.Linear(64, 1))
 
-    def forward(
-        self, z: torch.Tensor, a: torch.Tensor, h: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        x = torch.cat([z, self.action_embed(a)], dim=-1)
-        h = self.cell(x, h)
-        return h, self.next_embed(h), self.reward(h).squeeze(-1)
-
-    def init_state(self, batch: int, device: torch.device) -> torch.Tensor:
-        return torch.zeros(batch, HIDDEN, device=device)
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        h = self.n1(z)
+        a, _ = self.attn(h, h, h, need_weights=False)
+        z = z + a
+        return z + self.ff(self.n2(z))
 
 
 class SuwaWM(nn.Module):
-    def __init__(self):
+    def __init__(self, n_assets: int, n_features: int, d_model: int = D_MODEL, depth: int = 2):
         super().__init__()
-        self.encoder = Encoder()
-        self.dynamics = Dynamics()
+        self.n_assets = n_assets
+        self.encoder = AssetEncoder(n_features, d_model)
+        # Learned identity per slot, so the model can tell BTC from a small cap.
+        self.asset_embed = nn.Parameter(torch.zeros(1, n_assets, d_model))
+        nn.init.normal_(self.asset_embed, std=0.02)
+        self.blocks = nn.ModuleList([CrossAssetBlock(d_model) for _ in range(depth)])
+        self.out = nn.LayerNorm(d_model)
 
-    def loss(
-        self, obs: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor, next_obs: torch.Tensor
-    ) -> tuple[torch.Tensor, dict[str, float]]:
-        """obs/next_obs: [B,T,C,H,W]; actions/rewards: [B,T]."""
-        B, T = actions.shape
-        device = obs.device
-        h = self.dynamics.init_state(B, device)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: [B, A, T, F] -> per-asset context embeddings [B, A, D]"""
+        z = self.encoder(x) + self.asset_embed
+        for blk in self.blocks:
+            z = blk(z)
+        return self.out(z)
 
-        pred_losses, reward_losses, var_losses = [], [], []
-        for t in range(T):
-            z = self.encoder(obs[:, t])
-            with torch.no_grad():
-                target = self.encoder(next_obs[:, t])
-            h, z_hat, r_hat = self.dynamics(z, actions[:, t], h)
+    def market_state(self, x: torch.Tensor) -> torch.Tensor:
+        """A single vector summarising the whole market. [B, D]"""
+        return self.forward(x).mean(dim=1)
 
-            pred_losses.append(F.mse_loss(z_hat, target))
-            reward_losses.append(F.mse_loss(r_hat, rewards[:, t]))
-            # VICReg-style variance hinge: keep each embedding dim alive.
-            std = z.std(dim=0) + 1e-4
-            var_losses.append(F.relu(1.0 - std).mean())
 
-        pred = torch.stack(pred_losses).mean()
-        rew = torch.stack(reward_losses).mean()
-        var = torch.stack(var_losses).mean()
-        total = pred + rew + 0.1 * var
-        return total, {
-            "loss": float(total.item()),
-            "pred": float(pred.item()),
-            "reward": float(rew.item()),
-            "var": float(var.item()),
-        }
+class Predictor(nn.Module):
+    """JEPA predictor: given where the market is, predict where its
+    representation will be `horizon` hours from now."""
 
-    @torch.no_grad()
-    def dream(self, obs0: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        """Roll the model forward in latent space from one real observation.
-        obs0: [B,C,H,W]; actions: [B,T]. Returns predicted rewards [B,T]."""
-        B, T = actions.shape
-        h = self.dynamics.init_state(B, obs0.device)
-        z = self.encoder(obs0)
-        out = []
-        for t in range(T):
-            h, z, r = self.dynamics(z, actions[:, t], h)
-            out.append(r)
-        return torch.stack(out, dim=1)
+    def __init__(self, d_model: int = D_MODEL):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(d_model + 1, d_model * 2), nn.SiLU(),
+            nn.Linear(d_model * 2, d_model * 2), nn.SiLU(),
+            nn.Linear(d_model * 2, d_model),
+        )
+
+    def forward(self, z: torch.Tensor, horizon: float) -> torch.Tensor:
+        h = torch.full_like(z[..., :1], horizon)
+        return self.net(torch.cat([z, h], dim=-1))
+
+
+def vicreg_terms(z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Variance and covariance regularisers — without these a JEPA collapses
+    to a constant, which would trivially satisfy the prediction loss."""
+    z = z.reshape(-1, z.shape[-1])
+    z = z - z.mean(dim=0, keepdim=True)
+    std = torch.sqrt(z.var(dim=0) + 1e-6)
+    var_loss = F.relu(1.0 - std).mean()
+    n, d = z.shape
+    cov = (z.T @ z) / max(n - 1, 1)
+    off = cov - torch.diag_embed(torch.diagonal(cov))
+    cov_loss = (off**2).sum() / d
+    return var_loss, cov_loss
+
+
+class ExecutionHeads(nn.Module):
+    """What the creature is actually for.
+
+    Given the market's current state, predict the distribution of each asset's
+    next-H-hour log return: mu (drift) and sigma (risk). Execution decisions —
+    route now or wait, how much slippage to tolerate — are read off that.
+
+    sigma is *anchored* to the naive forecast (trailing realised vol scaled to
+    the horizon) and the model predicts a bounded multiplicative correction.
+    Learning vol from scratch would mean relearning what the baseline already
+    knows; this way the model's whole job is to improve on it, and it starts
+    level with the benchmark instead of below it.
+    """
+
+    def __init__(self, d_model: int = D_MODEL, n_scales: int = 4, max_log_adjust: float = 1.5):
+        super().__init__()
+        self.max_log_adjust = max_log_adjust
+        self.n_scales = n_scales
+        # The head sees the market embedding AND every trailing vol scale.
+        self.trunk = nn.Sequential(nn.Linear(d_model + n_scales, d_model), nn.SiLU())
+        self.mu = nn.Linear(d_model, 1)
+        self.delta = nn.Linear(d_model, 1)
+        # A learned blend of the scales forms the anchor the correction adjusts,
+        # i.e. the model discovers its own HAR mix rather than being given one.
+        self.blend = nn.Parameter(torch.zeros(n_scales))
+
+    def forward(
+        self, z: torch.Tensor, log_scales: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """log_scales: [B, A, S] log trailing vol at each look-back."""
+        h = self.trunk(torch.cat([z, log_scales], dim=-1))
+        mu = self.mu(h).squeeze(-1)
+        weights = torch.softmax(self.blend, dim=0)
+        anchor = (log_scales * weights).sum(dim=-1)
+        # Bounded correction: at most e^1.5 either way, so a bad batch can
+        # never produce a degenerate sigma.
+        adjust = torch.tanh(self.delta(h).squeeze(-1)) * self.max_log_adjust
+        return mu, (anchor + adjust).clamp(-9.0, 2.0)
+
+
+class SuwaExecutionModel(nn.Module):
+    """Pretrained world model + execution heads. This is what ships."""
+
+    def __init__(self, n_assets: int, n_features: int, d_model: int = D_MODEL,
+                 depth: int = 2, n_scales: int = 4):
+        super().__init__()
+        self.backbone = SuwaWM(n_assets, n_features, d_model, depth)
+        self.heads = ExecutionHeads(d_model, n_scales)
+
+    def forward(
+        self, x: torch.Tensor, log_scales: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.heads(self.backbone(x), log_scales)
+
+
+def gaussian_nll(mu: torch.Tensor, log_sigma: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Negative log likelihood of y under N(mu, sigma). Training sigma this way
+    is what makes the uncertainty calibrated rather than decorative."""
+    inv_var = torch.exp(-2 * log_sigma)
+    return (0.5 * inv_var * (y - mu) ** 2 + log_sigma).mean()
+
+
+# Crypto returns are not Gaussian. Under a Gaussian likelihood the optimiser
+# shrinks sigma to fit the calm bulk and is then annihilated by the tails —
+# which is exactly the failure we measured. A Student-t has the heavy tails
+# built in, so the fitted scale stays honest.
+STUDENT_T_DOF = 4.0
+
+
+def student_t_nll(
+    mu: torch.Tensor, log_scale: torch.Tensor, y: torch.Tensor, dof: float = STUDENT_T_DOF
+) -> torch.Tensor:
+    scale = torch.exp(log_scale)
+    z = (y - mu) / scale
+    c = (
+        math.lgamma((dof + 1) / 2)
+        - math.lgamma(dof / 2)
+        - 0.5 * math.log(dof * math.pi)
+    )
+    return (-c + log_scale + 0.5 * (dof + 1) * torch.log1p(z**2 / dof)).mean()
+
+
+def t_scale_to_std(dof: float = STUDENT_T_DOF) -> float:
+    """A Student-t scale is not a standard deviation; this converts it."""
+    return math.sqrt(dof / (dof - 2)) if dof > 2 else float("nan")

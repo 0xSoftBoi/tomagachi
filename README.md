@@ -58,12 +58,35 @@ creature's treasury. There is no owner variable.
 - **Steer it** — hold 50 NOM to `propose()`; passed votes rewrite the creature's
   parameters on-chain. Governance is binding, not advisory.
 
-## The model — SUWA-WM
+## What it actually does — SUWA-WM
 
-An action-conditioned **latent world model** (Dreamer/RSSM lineage, JEPA-style
-predict-the-embedding objective) trained on a procedural ocean world. Not an
-LLM. Open weights, Apache-2.0, warm-started every epoch so community compute
-compounds into one model. Determinism is the security model — see
+The creature trains an **execution risk model for on-chain trading**, and that
+is a real product, not a mascot.
+
+Given the live state of every asset Suwappu routes, it forecasts the
+distribution of each one's next 6 hours — and specifically how volatile they
+will be. An execution router reads that to set slippage tolerance and decide
+whether to route now or wait. It is not an LLM; it never sees text.
+
+Trained on **1,941 hours x 19 assets** of real hourly market data, pretrained
+JEPA-style (predict the *representation* of the future, not prices) then
+fine-tuned into a calibrated Student-t forecaster.
+
+| | test NLL | calibration | 
+|---|---|---|
+| **SUWA-WM** | **-2.4950** | **1.33** |
+| naive (trailing 24h vol) | -2.4792 | 3.29 |
+| HAR (fitted benchmark) | -2.3599 | — |
+| no-pretraining ablation | -2.4330 | 1.34 |
+
+The headline is calibration, not NLL. `calibration` is the RMS of
+`(actual - mu) / predicted_sigma`, where 1.0 is perfect. **The naive forecast
+understates risk by 3.3x; SUWA-WM understates it by 1.33x.** Size your slippage
+off the naive number and you are wrong by a factor of three.
+
+It has **no directional edge** and does not claim one — 55.8% directional
+accuracy on 278 test windows is inside the noise. Read `expected_drift` as
+zero. Full numbers, limits, and the reproducibility contract:
 [`model/README.md`](model/README.md).
 
 Verify any release against the chain:
@@ -72,13 +95,31 @@ Verify any release against the chain:
 python3 model/verify.py checkpoint.pt 0x<modelHash from latestModel()>
 ```
 
+## Its skills
+
+The model ships as MCP tools, so any agent — Claude, or Suwappu's own — can ask
+the creature what it knows:
+
+```
+execution_risk     forward risk + routing verdict for every asset
+asset_risk         one symbol, with a slippage number in bps
+market_state       is the market calmer or more dangerous than usual
+creature_vitals    live on-chain mood, treasury, verified epochs
+model_provenance   which weights are answering, and their scores
+```
+
+Setup in [`tools/README.md`](tools/README.md). Then: *"what's the execution
+risk on ETH right now?"*
+
 ## Repo layout
 
 | path | what |
 |---|---|
 | [`contracts/Tomagachi.sol`](contracts/Tomagachi.sol) | the creature: income, hunger, job market, court, registry |
 | [`agent/`](agent/) | unprivileged keeper + worker anyone can run |
-| [`model/`](model/) | SUWA-WM: world, model, deterministic trainer, verifier |
+| [`model/`](model/) | SUWA-WM: data pipeline, pretraining, fine-tuning, verifier |
+| [`tools/`](tools/) | MCP server — the model as skills any agent can call |
+| [`data/`](data/) | the pinned training corpus every worker must reproduce |
 | [`web/`](web/) | live vitals page, reads Base directly |
 
 ## Go live
@@ -124,10 +165,12 @@ epoch from `openEpoch()` to a finalized on-chain release.
 
 ## Roadmap
 
+- [ ] Add `datasetHash` to the contract's `Epoch` so data is pinned on-chain, not just in the manifest
+- [ ] Longer history and more assets — 90 days is the free-tier ceiling and the sample is small
+- [ ] Chain-native features: Base gas, mempool depth, bridge latency (execution risk is not only price risk)
+- [ ] Per-route slippage labels from Suwappu's own fills, to supervise the thing directly
 - [ ] Fetch base weights from IPFS/Arweave as well as Hugging Face
 - [ ] Pin a reproducible trainer image so bit-equality is guaranteed, not pinned by convention
-- [ ] Scale the Reef by governance vote: 32×32, pixel observations, multi-agent
 - [ ] Telegram front-end via the Suwappu bot: check vitals and feed from chat
-- [ ] Proof-of-learning attestations to shrink the challenge window
 
 MIT (code) / Apache-2.0 (model weights).

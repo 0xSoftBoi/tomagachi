@@ -10,3 +10,4 @@ __pycache__/
 *.pt
 .venv/
 .DS_Store
+data/live_cache.json

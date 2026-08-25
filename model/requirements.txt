@@ -1,3 +1,5 @@
-torch>=2.2
+# Pin torch: the on-chain challenge mechanism assumes honest workers agree
+# bit-for-bit, and reductions can differ across torch/BLAS versions.
+torch==2.13.0
 numpy>=1.26
-huggingface_hub>=0.23  # optional, for open-weight releases
+huggingface_hub>=0.23   # optional, for publishing open weights
