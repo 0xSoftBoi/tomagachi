@@ -54,6 +54,7 @@ epoch so community compute compounds into one model. See [`model/`](model/).
 | [`agent/`](agent/) | the brain: Suwappu swaps, compute brokerage, on-chain ops |
 | [`model/`](model/) | SUWA-WM: env, model, training, HF release |
 | [`web/`](web/) | live vitals page (static, reads Base directly) |
+| [`research/`](research/) | market scans: where inference revenue actually lands |
 
 ## Go live
 
@@ -88,6 +89,9 @@ creature starts paying for its own GPUs on-chain.
   awake-only, fully logged). Metabolism burns appetite, never money.
 - The product is the **open model**: every stablecoin fed becomes public,
   verifiable weights.
+- Feeding is one-way today: the creature spends and never earns. Whether that
+  should change — and what a model would have to be to earn — is worked out with
+  live market data in [`research/model-economics.md`](research/model-economics.md).
 
 ## Roadmap
 
