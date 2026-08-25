@@ -91,7 +91,9 @@ creature starts paying for its own GPUs on-chain.
   verifiable weights.
 - Feeding is one-way today: the creature spends and never earns. Whether that
   should change — and what a model would have to be to earn — is worked out with
-  live market data in [`research/model-economics.md`](research/model-economics.md).
+  live market data in [`research/model-economics.md`](research/model-economics.md),
+  and costed as an operating plan in
+  [`research/operating-plan.md`](research/operating-plan.md).
 
 ## Roadmap
 

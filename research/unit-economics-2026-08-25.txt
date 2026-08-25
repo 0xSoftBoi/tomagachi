@@ -1,0 +1,74 @@
+# Unit economics -- selling inference from the creature
+
+Rented H100 at $2.00/hr = $336/week, billed whether traffic arrives or not.
+
+## Calibration: what a token is actually worth, by archetype
+
+Realized $/M is blended over prompt+completion at list price. A high
+prompt:completion ratio means most billed tokens are cheap prompt tokens.
+
+comparable                                              $/M    p:c    tok/wk  GPU-hrs/wk  H100s needed
+sakana/fugu-ultra        orchestrated agents           5.59   41.7     1.46B        24.6          0.15
+anthropic/claude-opus-5  frontier                      5.54   36.4  1490.00B     25674.4        152.82
+aion-labs/aion-3.0       orchestrated RP               3.27   10.0     8.70B       219.7          1.31
+anthracite/magnum-v4-72b premium RP tune               3.12   15.6     0.12B         2.6          0.02
+morph/morph-v3-large     apply specialist              1.38    1.1     0.10B         7.3          0.04
+relace/relace-apply-3    apply specialist              1.03    1.2     0.39B        27.6          0.16
+thedrummer/cydonia-24b   community RP tune             0.31   16.7     1.31B        27.4          0.16
+deepseek/deepseek-v4-flash commodity                   0.08   18.0  5530.00B    113187.1        673.73
+sao10k/l3-lunaris-8b     commodity RP tune             0.04   13.0     5.44B       124.1          0.74
+
+**The leak.** cydonia-24b is the best-performing independent fine-tune on
+the platform, and a full week of its traffic is ~27 GPU-hours -- 16% of one
+H100. It grosses $409 against a $336 machine that bills for all 168 hours.
+The 84% that sits idle is the entire margin. Price is not the problem.
+
+## Scenarios
+
+scenario                                      served/wk   util   revenue   COGS/M  contrib/wk  margin
+A  match cydonia exactly, dedicated GPU           1.31B    16%      $407    0.256         $71     18%
+B  5 tunes of that size, one shared GPU           6.55B    82%    $2,037    0.051      $1,701     84%
+C  same fleet, priced as a premium system         6.55B    82%    $9,825    0.051      $9,489     97%
+D  match aion volume, no GPUs, upstream API       8.70B    n/a   $28,475    1.200     $18,035     63%
+E  task specialist, balanced p:c                  1.00B    42%    $1,200    0.336        $864     72%
+
+A is what the best independent fine-tune actually earns: $73 a week of
+contribution, which is not a business. B is the same product with the
+idle sold to four siblings. C is B plus the pricing power that only comes
+from selling a system rather than a personality. D runs no hardware at
+all -- COGS is upstream API tokens, so it scales from zero with no idle
+risk, but it has no weights to release, which is why it cannot be the
+whole answer for this repo.
+
+## Sensitivity: weekly contribution, one GPU, RP mix (p:c 16.7)
+
+  util \ $/M       0.30       0.60       1.00       2.00       3.00
+          5%      -$216       -$95        $65       $466       $867
+         16%        $49       $434       $947     $2,230     $3,513
+         30%       $386     $1,107     $2,070     $4,475     $6,881
+         60%     $1,107     $2,551     $4,475     $9,286    $14,098
+         90%     $1,829     $3,994     $6,881    $14,098    $21,314
+
+(16% is where cydonia sits: 1.28B tokens/wk on one H100.)
+
+Everything above the zero line is a utilization story or a pricing story.
+Winning on both is the only quadrant that pays a team.
+
+## Where these numbers are soft
+
+Throughput is the least certain input. Halving both prefill and decode
+doubles COGS/M -- at scenario B that moves $0.05/M to $0.10/M against a
+$0.31 price, so the ranking of the scenarios does not change. The
+conclusion is robust to being wrong about the GPU by 2x; it is not
+robust to being wrong about demand.
+
+Realized $/M ignores prompt-cache discounts, so heavily-cached
+comparables (opus at 86% cached, ox-alpha at 89%) are overstated. It
+does not affect the independents, which cache little or not at all.
+
+## What has to be true
+
+1. Fill the GPU. Break-even on one H100 is 1.1B tokens/wk at the community-tune price -- 13% utilization. One tune reaches 16% and clears $71. A fleet of five reaches 82% and clears $1,701. The second product on a shared base is worth more than the first.
+2. Realized price >= $0.60/M, double the community-tune tier. That is the gap between selling a personality ($0.31) and selling a system ($3.27), and it is worth more than any amount of GPU tuning.
+3. Demand without a sales team: ~6.5B tokens/wk routed to us. This is the binding constraint and the only one we cannot buy our way out of. OpenRouter discovery is the only zero-CAC channel an anonymous team has.
+
