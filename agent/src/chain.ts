@@ -1,12 +1,12 @@
 /**
- * On-chain half of the brain: reads the creature's vitals, feeds it swept
- * donations, buys compute, posts checkpoints. All via viem on Base.
+ * Typed client for the creature. Every method here is a public, permissionless
+ * function on the contract — this process has no privileged access, and the
+ * creature keeps running whether or not anyone runs this code.
  */
 import {
   createPublicClient,
   createWalletClient,
   http,
-  erc20Abi,
   type PublicClient,
   type WalletClient,
   type Account,
@@ -18,21 +18,36 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentDir, config, loadDeployment, type Deployment } from "./config.js";
 
-const artifact = JSON.parse(
-  readFileSync(join(agentDir, "artifacts", "Tomagachi.json"), "utf8")
-);
+const artifact = JSON.parse(readFileSync(join(agentDir, "artifacts", "Tomagachi.json"), "utf8"));
 export const tomagachiAbi = artifact.abi;
 
 export const MOODS = ["EGG", "HAPPY", "PECKISH", "STARVING", "HIBERNATING"] as const;
+export const EPOCH_STATES = [
+  "NONE", "OPEN", "CLAIMED", "SUBMITTED", "CHALLENGED", "FINALIZED",
+] as const;
+
 export type MoodName = (typeof MOODS)[number];
+export type EpochStateName = (typeof EPOCH_STATES)[number];
 
 export interface Vitals {
   mood: MoodName;
   satiety: bigint;
-  energy: bigint;
+  available: bigint;
   totalFed: bigint;
-  totalComputeSpent: bigint;
+  totalPaidOut: bigint;
+  releases: bigint;
   epochs: bigint;
+  liveEpoch: boolean;
+}
+
+export interface JobSpec {
+  id: bigint;
+  seed: `0x${string}`;
+  baseHash: `0x${string}`;
+  steps: number;
+  bounty: bigint;
+  state: EpochStateName;
+  deadline: bigint;
 }
 
 export class Creature {
@@ -41,115 +56,114 @@ export class Creature {
   readonly client: PublicClient;
   readonly wallet: WalletClient;
   readonly account: Account;
+  readonly address: `0x${string}`;
 
   constructor() {
     this.deployment = loadDeployment();
-    this.chain = this.deployment.chain === "baseSepolia" ? baseSepolia : base;
-    if (!config.operatorKey) throw new Error("set OPERATOR_KEY=0x...");
-    this.account = privateKeyToAccount(config.operatorKey);
+    this.chain = this.deployment.chainId === baseSepolia.id ? baseSepolia : base;
+    if (!config.privateKey) throw new Error("set PRIVATE_KEY=0x...");
+    this.account = privateKeyToAccount(config.privateKey);
     const transport = http(config.rpcUrl);
     this.client = createPublicClient({ chain: this.chain, transport });
     this.wallet = createWalletClient({ account: this.account, chain: this.chain, transport });
+    this.address = this.deployment.tomagachi;
   }
 
-  async vitals(): Promise<Vitals> {
-    const [m, s, e, fed, spent, epochs] = (await this.client.readContract({
-      address: this.deployment.tomagachi,
+  private read(functionName: string, args: unknown[] = []) {
+    return this.client.readContract({
+      address: this.address,
       abi: tomagachiAbi,
-      functionName: "vitals",
-    })) as [number, bigint, bigint, bigint, bigint, bigint];
-    return {
-      mood: MOODS[m],
-      satiety: s,
-      energy: e,
-      totalFed: fed,
-      totalComputeSpent: spent,
-      epochs,
-    };
+      functionName,
+      args,
+    });
   }
 
-  private async write(functionName: string, args: unknown[]): Promise<`0x${string}`> {
+  async write(functionName: string, args: unknown[] = [], value = 0n): Promise<`0x${string}`> {
     const { request } = await this.client.simulateContract({
-      address: this.deployment.tomagachi,
+      address: this.address,
       abi: tomagachiAbi,
       functionName,
       args,
       account: this.account,
+      value,
     });
     const hash = await this.wallet.writeContract(request);
-    await this.client.waitForTransactionReceipt({ hash });
+    const receipt = await this.client.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") throw new Error(`${functionName} reverted`);
     return hash;
   }
 
-  /** Approve USDC (if needed) and feed the creature from the operator wallet. */
-  async feedFor(contributor: `0x${string}`, amount: bigint): Promise<`0x${string}`> {
-    const allowance = await this.client.readContract({
-      address: this.deployment.usdc,
-      abi: erc20Abi,
-      functionName: "allowance",
-      args: [this.account.address, this.deployment.tomagachi],
-    });
-    if (allowance < amount) {
-      const { request } = await this.client.simulateContract({
-        address: this.deployment.usdc,
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [this.deployment.tomagachi, amount * 1000n],
+  /** Simulate first so we never burn gas on a call the creature will reject. */
+  async canWrite(functionName: string, args: unknown[] = [], value = 0n): Promise<boolean> {
+    try {
+      await this.client.simulateContract({
+        address: this.address,
+        abi: tomagachiAbi,
+        functionName,
+        args,
         account: this.account,
+        value,
       });
-      const hash = await this.wallet.writeContract(request);
-      await this.client.waitForTransactionReceipt({ hash });
+      return true;
+    } catch {
+      return false;
     }
-    return this.write("feedFor", [contributor, amount]);
   }
 
-  async buyCompute(
-    to: `0x${string}`,
-    amount: bigint,
-    provider: string,
-    jobRef: string
-  ): Promise<`0x${string}`> {
-    return this.write("buyCompute", [to, amount, provider, jobRef]);
+  async vitals(): Promise<Vitals> {
+    const v = (await this.read("vitals")) as [
+      number, bigint, bigint, bigint, bigint, bigint, bigint, boolean
+    ];
+    return {
+      mood: MOODS[v[0]],
+      satiety: v[1],
+      available: v[2],
+      totalFed: v[3],
+      totalPaidOut: v[4],
+      releases: v[5],
+      epochs: v[6],
+      liveEpoch: v[7],
+    };
   }
 
-  async checkpoint(
-    epoch: bigint,
-    modelHash: `0x${string}`,
-    uri: string,
-    lossMilli: bigint,
-    computeSpent: bigint
-  ): Promise<`0x${string}`> {
-    return this.write("checkpoint", [epoch, modelHash, uri, lossMilli, computeSpent]);
+  says(): Promise<string> {
+    return this.read("says") as Promise<string>;
   }
 
-  async speak(words: string): Promise<`0x${string}`> {
-    return this.write("speak", [words]);
+  async jobSpec(id: bigint): Promise<JobSpec> {
+    const s = (await this.read("jobSpec", [id])) as [
+      `0x${string}`, `0x${string}`, number, bigint, number, bigint
+    ];
+    return {
+      id,
+      seed: s[0],
+      baseHash: s[1],
+      steps: s[2],
+      bounty: s[3],
+      state: EPOCH_STATES[s[4]],
+      deadline: s[5],
+    };
   }
 
-  /** ERC-20 balance of the operator wallet (donation inbox). */
-  async walletBalance(token: `0x${string}`): Promise<bigint> {
-    return this.client.readContract({
-      address: token,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [this.account.address],
-    });
+  async latestRelease(): Promise<{ epoch: bigint; hash: `0x${string}`; uri: string } | null> {
+    const n = (await this.read("releaseCount")) as bigint;
+    if (n === 0n) return null;
+    const r = (await this.read("latestModel")) as [bigint, `0x${string}`, string, bigint];
+    return { epoch: r[0], hash: r[1], uri: r[2] };
   }
 
-  /** Sign and broadcast an unsigned tx prepared by Suwappu's self-custody path. */
-  async sendPrepared(tx: {
-    to: `0x${string}`;
-    data: `0x${string}`;
-    value?: string;
-  }): Promise<`0x${string}`> {
-    const hash = await this.wallet.sendTransaction({
-      account: this.account,
-      chain: this.chain,
-      to: tx.to,
-      data: tx.data,
-      value: tx.value ? BigInt(tx.value) : undefined,
-    });
-    await this.client.waitForTransactionReceipt({ hash });
-    return hash;
+  minStake(): Promise<bigint> {
+    return this.read("minStakeWei") as Promise<bigint>;
+  }
+
+  /** Full epoch record, for reading the submitted result and its timings. */
+  async epoch(id: bigint): Promise<Record<string, any>> {
+    const e = (await this.read("epochs", [id])) as any[];
+    return {
+      openedAt: e[0], deadline: e[1], submittedAt: e[2], voteEnd: e[3],
+      seed: e[4], baseHash: e[5], steps: e[6], bounty: e[7],
+      worker: e[8], workerStake: e[9], modelHash: e[10], uri: e[11],
+      lossMilli: e[12], challenger: e[13],
+    };
   }
 }

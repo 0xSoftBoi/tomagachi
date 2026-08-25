@@ -1,18 +1,25 @@
 /**
- * Deploy Tomagachi to Base (or any EVM chain) with viem.
+ * Deploy the creature and hatch its PumpClaw token.
  *
- * Usage:
- *   DEPLOYER_KEY=0x... npm run deploy                # Base mainnet, native USDC
- *   DEPLOYER_KEY=0x... CHAIN=baseSepolia npm run deploy
+ *   PRIVATE_KEY=0x... npm run deploy
+ *
+ * After this the creature is fully autonomous: it owns its own token, is the
+ * registered recipient of 80% of that token's trading fees, and nobody — the
+ * deployer included — can withdraw its treasury. There is no admin key.
  *
  * Env:
- *   DEPLOYER_KEY   required — deployer private key (becomes owner)
- *   OPERATOR       optional — brain wallet address (defaults to deployer)
- *   USDC           optional — stablecoin address override
- *   RPC_URL        optional — RPC override
- *   CREATURE_NAME  optional — default "Suwa"
+ *   PRIVATE_KEY      required — pays gas. Gains NO authority over the creature.
+ *   CHAIN            base (default) | baseSepolia
+ *   RPC_URL          RPC override
+ *   NAME/SYMBOL      token identity (default "Suwappu Tomagachi" / SUWA)
+ *   SUPPLY           whole tokens (default 1_000_000_000)
+ *   FDV_ETH          initial fully-diluted valuation in ETH (default 2)
+ *   IMAGE_URL/SITE   token metadata
+ *   METABOLISM_ETH   satiety burned per day (default 0.01)
+ *   MAX_SATIETY_ETH  full belly (default 1)
+ *   SKIP_HATCH=1     deploy only, hatch later
  */
-import { createWalletClient, createPublicClient, http, parseUnits } from "viem";
+import { createWalletClient, createPublicClient, http, parseEther, formatEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -20,68 +27,81 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const artifact = JSON.parse(
-  readFileSync(join(here, "..", "artifacts", "Tomagachi.json"), "utf8")
-);
-
-const USDC_BY_CHAIN: Record<string, `0x${string}`> = {
-  base: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // native USDC on Base
-  baseSepolia: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-};
+const artifact = JSON.parse(readFileSync(join(here, "..", "artifacts", "Tomagachi.json"), "utf8"));
 
 const chainKey = process.env.CHAIN ?? "base";
 const chain = chainKey === "baseSepolia" ? baseSepolia : base;
-const usdc = (process.env.USDC ?? USDC_BY_CHAIN[chainKey]) as `0x${string}`;
-if (!usdc) throw new Error(`no USDC address known for chain ${chainKey}; set USDC=`);
 
-const key = process.env.DEPLOYER_KEY as `0x${string}` | undefined;
-if (!key) throw new Error("set DEPLOYER_KEY=0x...");
-
+const key = process.env.PRIVATE_KEY as `0x${string}` | undefined;
+if (!key) throw new Error("set PRIVATE_KEY=0x...");
 const account = privateKeyToAccount(key);
-const operator = (process.env.OPERATOR ?? account.address) as `0x${string}`;
-const name = process.env.CREATURE_NAME ?? "Suwa";
 
 const transport = http(process.env.RPC_URL);
 const wallet = createWalletClient({ account, chain, transport });
 const client = createPublicClient({ chain, transport });
 
-// Metabolism: 5 USDC of appetite per day; full belly = 500 USDC of satiety
-// (~100 days of nap-free life on a full stomach). Tune via setMetabolism later.
-const metabolismPerDay = parseUnits("5", 6);
-const maxSatiety = parseUnits("500", 6);
+const metabolism = parseEther(process.env.METABOLISM_ETH ?? "0.01");
+const maxSatiety = parseEther(process.env.MAX_SATIETY_ETH ?? "1");
 
-console.log(`deploying Tomagachi "${name}" to ${chain.name}`);
-console.log(`  owner/deployer: ${account.address}`);
-console.log(`  operator:       ${operator}`);
-console.log(`  stable (USDC):  ${usdc}`);
+const name = process.env.NAME ?? "Suwappu Tomagachi";
+const symbol = process.env.SYMBOL ?? "SUWA";
+const supply = BigInt(process.env.SUPPLY ?? "1000000000") * 10n ** 18n;
+const fdv = parseEther(process.env.FDV_ETH ?? "2");
+const imageUrl = process.env.IMAGE_URL ?? "";
+const siteUrl = process.env.SITE ?? "https://suwappu.bot";
 
-const hash = await wallet.deployContract({
+console.log(`deploying the creature to ${chain.name}`);
+console.log(`  deployer     : ${account.address} (gains no authority)`);
+console.log(`  metabolism   : ${formatEther(metabolism)} ETH/day`);
+console.log(`  full belly   : ${formatEther(maxSatiety)} ETH`);
+
+const deployHash = await wallet.deployContract({
   abi: artifact.abi,
   bytecode: artifact.bytecode,
-  args: [usdc, account.address, operator, name, metabolismPerDay, maxSatiety],
+  args: [metabolism, maxSatiety],
 });
-console.log(`deploy tx: ${hash}`);
+const receipt = await client.waitForTransactionReceipt({ hash: deployHash });
+const tomagachi = receipt.contractAddress!;
+console.log(`  creature     : ${tomagachi}`);
 
-const receipt = await client.waitForTransactionReceipt({ hash });
-const address = receipt.contractAddress!;
-console.log(`Tomagachi: ${address}`);
-
-const nom = await client.readContract({
-  address,
+const nom = (await client.readContract({
+  address: tomagachi,
   abi: artifact.abi,
   functionName: "nom",
-});
-console.log(`NOM token: ${nom}`);
+})) as `0x${string}`;
+console.log(`  NOM          : ${nom}`);
+
+let token: `0x${string}` | undefined;
+if (!process.env.SKIP_HATCH) {
+  console.log(`\nhatching "${name}" ($${symbol}) on PumpClaw…`);
+  const { request } = await client.simulateContract({
+    address: tomagachi,
+    abi: artifact.abi,
+    functionName: "hatch",
+    args: [name, symbol, imageUrl, siteUrl, supply, fdv],
+    account,
+  });
+  const hatchHash = await wallet.writeContract(request);
+  await client.waitForTransactionReceipt({ hash: hatchHash });
+  token = (await client.readContract({
+    address: tomagachi,
+    abi: artifact.abi,
+    functionName: "token",
+  })) as `0x${string}`;
+  console.log(`  $${symbol}         : ${token}`);
+  console.log(`  the creature now earns 80% of every trade on its own token.`);
+}
 
 const out = {
   chain: chainKey,
   chainId: chain.id,
-  tomagachi: address,
+  tomagachi,
   nom,
-  usdc,
-  operator,
+  token,
   deployedAt: new Date().toISOString(),
-  deployTx: hash,
+  deployTx: deployHash,
 };
-writeFileSync(join(here, "..", "deployment.json"), JSON.stringify(out, null, 2));
-console.log("wrote agent/deployment.json — the brain and the web page read this");
+const path = join(here, "..", "deployment.json");
+writeFileSync(path, JSON.stringify(out, null, 2));
+console.log(`\nwrote agent/deployment.json — copy it into web/ to light up the page`);
+console.log(`explorer: ${chain.blockExplorers.default.url}/address/${tomagachi}`);

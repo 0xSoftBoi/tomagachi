@@ -18,7 +18,12 @@ const input = {
   language: "Solidity",
   sources: { "Tomagachi.sol": { content: source } },
   settings: {
-    optimizer: { enabled: true, runs: 500 },
+    // viaIR: the creature's wide `vitals()` return blows the legacy stack.
+    viaIR: true,
+    // Shanghai, not solc's Cancun default: MCOPY/TSTORE would make the
+    // creature undeployable on any chain that hasn't shipped Cancun.
+    evmVersion: "shanghai",
+    optimizer: { enabled: true, runs: 200 },
     outputSelection: { "*": { "*": ["abi", "evm.bytecode.object"] } },
   },
 };
