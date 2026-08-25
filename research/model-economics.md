@@ -20,19 +20,49 @@ Reproduce: `python3 research/scan_market.py`.*
 
 ## 1. Where the money actually is
 
-Top 20 models on OpenRouter, one day of traffic (2026-08-24):
+Top 20 models on OpenRouter, seven days ending 2026-08-24 — the same window as
+the independent table below, so the two are directly comparable:
 
 | | |
 |---|---|
-| Tokens/day | 81 trillion |
-| Gross billings/day | ~$33.9M (~$12.4B/yr run-rate) |
+| Tokens/week | 81 trillion |
+| Gross billings/week | ~$33.9M (~$1.8B/yr run-rate) |
 | Models in the top 20 trained by an independent | **0** |
 
 Every slot is a frontier lab (Anthropic, OpenAI, Google) or a well-capitalised open-weight
-lab (DeepSeek, Moonshot, Z.ai, Tencent, Xiaomi, NVIDIA, MiniMax). The single largest
-line by volume, `stealth/ox-alpha` at 17.5T tokens/day, is priced at **$0** — somebody
-is buying 17.5T tokens/day of evaluation data with free inference. That is the actual
-business model at the top of the board, and it is not one we can run.
+lab (DeepSeek, Moonshot, Z.ai, Tencent, Xiaomi, NVIDIA, MiniMax). Not one independent.
+
+### The exception that proves it: `stealth/ox-alpha`
+
+The largest line by volume on the board is the only one priced at **$0**, and it is
+worth understanding because it is the closest thing to "a new entrant taking the top
+slot" — and it is not a business model anyone else can copy.
+
+| | |
+|---|---|
+| Listed | 2026-08-20, five days before this scan |
+| Volume | 17.5T tokens in that window; now steady at **5–6T/day** |
+| Price | $0 in, $0 out |
+| Provider | "Stealth" — anonymous by choice; OpenRouter states it is *not* the developer, owner or provider |
+| Shape | 1M context, mandatory reasoning (default effort `max`), text + image + video in |
+| Data terms | prompts and completions **retained by the provider**, stated as not used for training |
+| Top consumers | Hermes Agent (4.3T), Claude Code (2.2T), DeepSeek Harness (1.8T), omp (1.4T), ZCode (0.7T) |
+
+This is an unreleased frontier-class coding model being A/B tested in public under a
+codename before launch — the established pattern for stealth listings. The lab pays
+the full inference bill and gets, in five days, tens of millions of real agentic
+coding sessions from the harnesses that matter, against live competitors, with
+prompts and completions retained. It is a **customer-acquisition and evaluation
+spend**, not revenue: the payoff arrives later, when the codename is replaced by a
+brand and a price.
+
+Two things follow for us. First, free-tier volume on this platform is a marketing
+budget, and the number that looks like dominance is the one line on the board earning
+nothing. Second, note *what* it is buying attention for: coding and sustained agentic
+work. That is where the demand pressure is, and it is the same niche Option C below
+points at — except we would enter it at the specialist tier, where a small model
+priced at $1–3/M does one checkable job, rather than at the frontier tier, where the
+entry fee is giving away 6T tokens a day.
 
 ## 2. The community fine-tune tier: attention without revenue
 
@@ -186,8 +216,9 @@ H100 street prices ($1.49–$6.98/hr, ~$2 mid-market) from public GPU-cloud comp
 - **OpenRouter is a slice.** First-party API traffic (most of Anthropic's and
   OpenAI's actual revenue) is not in this data. The leaderboard measures OpenRouter,
   not the industry.
-- **Snapshots.** Leaderboard is one day; the independent table is seven complete
-  days. Weekly figures in the low hundreds of dollars are noisy — but the argument
-  turns on order of magnitude ($400/wk vs $28,000/wk), not on precision.
+- **Window.** Both tables are seven days. Rows in the rankings feed are 7-day totals,
+  not daily ones — verified by summing a model page's own daily series over the same
+  window and matching the row exactly. Weekly figures in the low hundreds of dollars
+  are noisy, but the argument turns on order of magnitude ($400/wk vs $28,000/wk).
 - **"Trainer paid?" is inferred** by matching the model's author against its serving
   provider. It flags who bills the tokens; private revenue-share deals would not show up.

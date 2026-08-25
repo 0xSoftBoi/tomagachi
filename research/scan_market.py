@@ -5,7 +5,7 @@ Answers one question with live data: which models make money, and who
 captures it. Pulls three public sources, joins them, prints markdown.
 
   1. OpenRouter model catalog   -> per-token list prices
-  2. OpenRouter rankings page   -> daily token volume per model
+  2. OpenRouter rankings page   -> 7-day token volume per model
   3. OpenRouter model pages     -> 7-day volume, serving providers, top apps
   4. Hugging Face trending API  -> what gets downloaded (note: downloads pay $0)
 
@@ -102,7 +102,13 @@ def gross(rec, model):
 
 
 def leaderboard(by_slug):
-    """Top models platform-wide, one day of traffic, with gross billings."""
+    """Top models platform-wide, with gross billings.
+
+    Each row in this feed is a SEVEN-DAY total, not a daily one -- verified by
+    summing a model page's own daily series over the same window and matching
+    the row exactly. Same window as the per-model table below, so the two are
+    directly comparable.
+    """
     html = get(OR + "/rankings", raw=True).replace('\\"', '"')
     recs = embedded_array(html, "rankingData") or []
     rows = []
@@ -116,9 +122,9 @@ def leaderboard(by_slug):
             "id": m["id"] if m else slug,
             "tokens": r["total_prompt_tokens"] + r["total_completion_tokens"],
             "requests": r["count"],
-            "gross_day": gross(r, m),
+            "gross_week": gross(r, m),
         })
-    rows.sort(key=lambda r: -r["gross_day"])
+    rows.sort(key=lambda r: -r["gross_week"])
     return rows
 
 
@@ -198,16 +204,16 @@ def main():
 
     data, by_id, by_slug = catalog()
 
-    out("## Platform leaderboard (OpenRouter, 1 day)\n\n")
-    out("| model | tokens/day | requests/day | gross/day |\n|---|---:|---:|---:|\n")
+    out("## Platform leaderboard (OpenRouter, 7 days)\n\n")
+    out("| model | tokens/wk | requests/wk | gross/wk |\n|---|---:|---:|---:|\n")
     board = leaderboard(by_slug)
     for r in board:
         out("| `%s` | %.2fT | %.1fM | %s |\n" % (
-            r["id"], r["tokens"] / 1e12, r["requests"] / 1e6, usd(r["gross_day"])))
-    out("\n**Top-20 total: %.0fT tokens/day, %s/day gross (~$%.1fB/yr run-rate).**\n\n" % (
+            r["id"], r["tokens"] / 1e12, r["requests"] / 1e6, usd(r["gross_week"])))
+    out("\n**Top-20 total: %.0fT tokens/wk, %s/wk gross (~$%.1fB/yr run-rate).**\n\n" % (
         sum(r["tokens"] for r in board) / 1e12,
-        usd(sum(r["gross_day"] for r in board)),
-        sum(r["gross_day"] for r in board) * 365 / 1e9))
+        usd(sum(r["gross_week"] for r in board)),
+        sum(r["gross_week"] for r in board) * 52 / 1e9))
 
     out("## Non-lab models: who earns, and who actually collects it\n\n")
     slugs = [m["id"].split(":")[0] for m in data
