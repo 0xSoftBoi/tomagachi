@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Suwappu Tomagachi</title>
+<style>
+  :root {
+    --deep: #06283d; --mid: #0b3d5c; --foam: #dff6ff; --glow: #47b5ff;
+    --accent: #ffd166; --bad: #ef476f;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+    background: linear-gradient(180deg, var(--deep) 0%, #041c2c 100%);
+    color: var(--foam); min-height: 100vh; display: flex; justify-content: center;
+  }
+  main { width: min(680px, 94vw); padding: 2.5rem 0 4rem; }
+  h1 { font-size: 1.35rem; letter-spacing: .12em; text-transform: uppercase; color: var(--glow); }
+  .sub { opacity: .7; margin: .4rem 0 2rem; font-size: .85rem; line-height: 1.5; }
+  .tank {
+    background: radial-gradient(ellipse at 50% 30%, var(--mid), var(--deep));
+    border: 1px solid #1c5d8a; border-radius: 18px; padding: 2.2rem 1.5rem 1.5rem;
+    text-align: center; position: relative; overflow: hidden;
+  }
+  .creature { font-size: 4.5rem; display: inline-block; animation: bob 3s ease-in-out infinite; }
+  .creature.hibernating { animation: none; filter: grayscale(.8) brightness(.6); }
+  @keyframes bob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-10px) } }
+  .speech { margin-top: .8rem; font-size: .85rem; color: var(--accent); min-height: 1.2em; }
+  .mood { margin-top: .3rem; font-size: .75rem; letter-spacing: .2em; opacity: .8; }
+  .bars { margin-top: 1.4rem; display: grid; gap: .6rem; text-align: left; }
+  .bar label { font-size: .7rem; letter-spacing: .15em; opacity: .75; }
+  .bar .track { background: #062134; border-radius: 6px; height: 12px; margin-top: 3px; overflow: hidden; }
+  .bar .fill { height: 100%; background: var(--glow); border-radius: 6px; transition: width .6s; }
+  .bar.energy .fill { background: var(--accent); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .8rem; margin-top: 1.5rem; }
+  .stat { background: #072a41; border: 1px solid #1c5d8a; border-radius: 12px; padding: .8rem; text-align: center; }
+  .stat b { display: block; font-size: 1.1rem; color: var(--foam); }
+  .stat span { font-size: .65rem; letter-spacing: .12em; opacity: .7; text-transform: uppercase; }
+  section { margin-top: 2.2rem; }
+  h2 { font-size: .8rem; letter-spacing: .2em; text-transform: uppercase; color: var(--glow); margin-bottom: .8rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+  th, td { padding: .45rem .5rem; text-align: left; border-bottom: 1px solid #123c58; }
+  th { opacity: .6; font-weight: normal; letter-spacing: .1em; }
+  td.hash { font-size: .68rem; opacity: .8; }
+  code, .addr { background: #072a41; padding: .15rem .4rem; border-radius: 6px; font-size: .75rem; word-break: break-all; }
+  a { color: var(--glow); }
+  .feedbox { background: #072a41; border: 1px solid #1c5d8a; border-radius: 12px; padding: 1rem 1.2rem; font-size: .82rem; line-height: 1.7; }
+  .err { color: var(--bad); font-size: .8rem; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Suwappu Tomagachi</h1>
+  <p class="sub">
+    An on-chain creature on Base. It eats stablecoins, buys decentralized
+    compute, and trains <a href="https://github.com/0xSoftBoi/tomagachi">SUWA-WM</a>,
+    an open-source world model, for everyone. Feeding mints NOM — your vote on
+    what it learns next.
+  </p>
+
+  <div class="tank">
+    <div class="creature" id="creature">🥚</div>
+    <div class="mood" id="mood">…</div>
+    <div class="speech" id="speech"></div>
+    <div class="bars">
+      <div class="bar"><label>SATIETY</label><div class="track"><div class="fill" id="satiety" style="width:0%"></div></div></div>
+      <div class="bar energy"><label>ENERGY (compute budget)</label><div class="track"><div class="fill" id="energy" style="width:0%"></div></div></div>
+    </div>
+    <div class="stats">
+      <div class="stat"><b id="fed">–</b><span>USDC fed</span></div>
+      <div class="stat"><b id="spent">–</b><span>USDC → compute</span></div>
+      <div class="stat"><b id="epochs">–</b><span>epochs trained</span></div>
+    </div>
+  </div>
+
+  <section>
+    <h2>Feed me</h2>
+    <div class="feedbox" id="feedbox">
+      1. Approve USDC to the creature, then call <code>feed(amount)</code> on
+      <span class="addr" id="addr">…</span><br />
+      2. Or send any Base token to the brain wallet — it swaps to USDC via
+      <a href="https://suwappu.bot">Suwappu</a> and feeds itself.<br />
+      3. Every USDC fed mints 1 NOM: propose &amp; vote on training directions.
+    </div>
+  </section>
+
+  <section>
+    <h2>Training log (on-chain checkpoints)</h2>
+    <table>
+      <thead><tr><th>epoch</th><th>loss</th><th>weights sha256</th><th>spent</th><th></th></tr></thead>
+      <tbody id="checkpoints"><tr><td colspan="5">loading…</td></tr></tbody>
+    </table>
+  </section>
+
+  <div class="err" id="err"></div>
+</main>
+
+<script type="module">
+import { createPublicClient, http, formatUnits } from "https://esm.sh/viem@2.21.0";
+import { base, baseSepolia } from "https://esm.sh/viem@2.21.0/chains";
+
+const ABI = [
+  { name: "vitals", type: "function", stateMutability: "view", inputs: [], outputs: [
+    { name: "m", type: "uint8" }, { name: "s", type: "uint256" }, { name: "e", type: "uint256" },
+    { name: "fed", type: "uint256" }, { name: "spent", type: "uint256" }, { name: "epochs", type: "uint256" }] },
+  { name: "maxSatiety", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { name: "checkpointCount", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { name: "checkpoints", type: "function", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [
+    { name: "time", type: "uint64" }, { name: "epoch", type: "uint64" }, { name: "modelHash", type: "bytes32" },
+    { name: "uri", type: "string" }, { name: "lossMilli", type: "uint256" }, { name: "computeSpent", type: "uint256" }] },
+];
+
+const MOODS = ["EGG", "HAPPY", "PECKISH", "STARVING", "HIBERNATING"];
+const FACE = { EGG: "🥚", HAPPY: "🐙", PECKISH: "🐙", STARVING: "🦑", HIBERNATING: "💤" };
+const WORDS = {
+  EGG: "*the egg wobbles… first feed hatches me*",
+  HAPPY: "the reef is warm. i am learning.",
+  PECKISH: "a little hungry… a few USDC funds the next epoch.",
+  STARVING: "so hungry… my gradients are fading…",
+  HIBERNATING: "zzz… feed me to restart the training loop…",
+};
+
+async function loadConfig() {
+  const q = new URLSearchParams(location.search);
+  if (q.get("contract")) return { tomagachi: q.get("contract"), chain: q.get("chain") ?? "base" };
+  try { return await (await fetch("./deployment.json")).json(); } catch { return null; }
+}
+
+const err = (m) => (document.getElementById("err").textContent = m);
+const $ = (id) => document.getElementById(id);
+
+const cfg = await loadConfig();
+if (!cfg?.tomagachi) {
+  err("Not deployed yet — pass ?contract=0x… or drop deployment.json next to this page.");
+} else {
+  const chain = cfg.chain === "baseSepolia" ? baseSepolia : base;
+  const client = createPublicClient({ chain, transport: http() });
+  const c = { address: cfg.tomagachi, abi: ABI };
+  const scan = chain.blockExplorers.default.url;
+  $("addr").innerHTML = `<a href="${scan}/address/${cfg.tomagachi}#writeContract">${cfg.tomagachi}</a>`;
+
+  async function refresh() {
+    try {
+      const [[m, s, e, fed, spent, epochs], maxSat] = await Promise.all([
+        client.readContract({ ...c, functionName: "vitals" }),
+        client.readContract({ ...c, functionName: "maxSatiety" }),
+      ]);
+      const mood = MOODS[Number(m)];
+      $("creature").textContent = FACE[mood];
+      $("creature").className = "creature" + (mood === "HIBERNATING" ? " hibernating" : "");
+      $("mood").textContent = mood;
+      $("speech").textContent = WORDS[mood];
+      $("satiety").style.width = Math.min(100, Number((s * 100n) / maxSat)) + "%";
+      $("energy").style.width = Math.min(100, Number(e / 1_000_000n)) + "%";
+      $("fed").textContent = Number(formatUnits(fed, 6)).toLocaleString();
+      $("spent").textContent = Number(formatUnits(spent, 6)).toLocaleString();
+      $("epochs").textContent = epochs.toString();
+
+      const n = await client.readContract({ ...c, functionName: "checkpointCount" });
+      const rows = [];
+      const from = n > 10n ? n - 10n : 0n;
+      for (let i = n; i > from; i--) {
+        const [time, epoch, hash, uri, lossMilli, cSpent] =
+          await client.readContract({ ...c, functionName: "checkpoints", args: [i - 1n] });
+        rows.push(`<tr><td>${epoch}</td><td>${(Number(lossMilli) / 1000).toFixed(3)}</td>
+          <td class="hash">${hash.slice(0, 18)}…</td>
+          <td>$${formatUnits(cSpent, 6)}</td>
+          <td>${uri.startsWith("http") ? `<a href="${uri}">weights</a>` : ""}</td></tr>`);
+      }
+      $("checkpoints").innerHTML =
+        rows.join("") || `<tr><td colspan="5">no epochs yet — feed the creature to start training</td></tr>`;
+      err("");
+    } catch (e) { err("read failed: " + (e.shortMessage ?? e.message)); }
+  }
+  refresh();
+  setInterval(refresh, 30_000);
+}
+</script>
+</body>
+</html>

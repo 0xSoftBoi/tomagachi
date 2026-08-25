@@ -1,0 +1,22 @@
+{
+  "name": "@tomagachi/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The brain of the Suwappu Tomagachi — feeds on stablecoins, buys decentralized compute, trains an open world model.",
+  "scripts": {
+    "compile": "tsx scripts/compile.ts",
+    "deploy": "tsx scripts/deploy.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "solc": "0.8.26",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
