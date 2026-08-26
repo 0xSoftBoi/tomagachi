@@ -117,10 +117,19 @@ contract NomToken {
 contract Tomagachi {
     // ───────────────────────────────────────────────────────────── constants
 
-    IPumpClawFactory public constant PUMPCLAW_FACTORY =
-        IPumpClawFactory(0xe5bCa0eDe9208f7Ee7FCAFa0415Ca3DC03e16a90);
-    IPumpClawLPLocker public constant PUMPCLAW_LOCKER =
-        IPumpClawLPLocker(0x9047c0944c843d91951a6C91dc9f3944D826ACA8);
+    /// PumpClaw on Base mainnet. Injected rather than hardcoded: with these as
+    /// constants the creature could only ever exist on one chain, so it could
+    /// not be rehearsed on a testnet at all — `hatch()` would call an address
+    /// with no code and every downstream function is gated on `hatched`.
+    /// Immutable, so it is still fixed for the life of the creature and costs
+    /// no more gas to read than a constant.
+    IPumpClawFactory public immutable PUMPCLAW_FACTORY;
+    IPumpClawLPLocker public immutable PUMPCLAW_LOCKER;
+
+    address internal constant PUMPCLAW_FACTORY_BASE =
+        0xe5bCa0eDe9208f7Ee7FCAFa0415Ca3DC03e16a90;
+    address internal constant PUMPCLAW_LOCKER_BASE =
+        0x9047c0944c843d91951a6C91dc9f3944D826ACA8;
 
     /// NOM minted per 1 ETH of food delivered.
     uint256 public constant NOM_PER_ETH = 1000e18;
@@ -271,7 +280,21 @@ contract Tomagachi {
         _lock = 1;
     }
 
-    constructor(uint256 _metabolismPerDay, uint256 _maxSatiety, bytes32 _datasetHash) {
+    /// @param _factory PumpClaw factory; pass address(0) for the Base mainnet one.
+    /// @param _locker  PumpClaw LP locker; pass address(0) for the Base mainnet one.
+    constructor(
+        uint256 _metabolismPerDay,
+        uint256 _maxSatiety,
+        bytes32 _datasetHash,
+        address _factory,
+        address _locker
+    ) {
+        PUMPCLAW_FACTORY = IPumpClawFactory(
+            _factory == address(0) ? PUMPCLAW_FACTORY_BASE : _factory
+        );
+        PUMPCLAW_LOCKER = IPumpClawLPLocker(
+            _locker == address(0) ? PUMPCLAW_LOCKER_BASE : _locker
+        );
         metabolismPerDay = _metabolismPerDay;
         maxSatiety = _maxSatiety;
         datasetHash = _datasetHash;
@@ -299,6 +322,7 @@ contract Tomagachi {
         uint256 initialFdv
     ) external nonReentrant returns (address) {
         require(!hatched, "already hatched");
+        require(address(PUMPCLAW_FACTORY).code.length > 0, "no PumpClaw on this chain");
         hatched = true;
         (address t, uint256 pid) = PUMPCLAW_FACTORY.createToken(
             name_, symbol_, imageUrl, websiteUrl, totalSupply_, initialFdv, address(this)

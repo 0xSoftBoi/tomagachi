@@ -131,6 +131,7 @@ cd agent && npm install && npm run compile
 
 # Deploys the creature AND hatches its PumpClaw token in one shot.
 # The deployer pays gas and gains no authority whatsoever.
+# Measured on a Base mainnet fork: 5,918,441 gas total, ~$0.09 at 0.006 gwei.
 PRIVATE_KEY=0x... npm run deploy
 
 # Run a keeper + worker (optional — anyone can, and the creature
@@ -146,6 +147,34 @@ cp deployment.json ../web/ && npx serve ../web
 `npm run deploy` prints the token address. Trading it on PumpClaw is what feeds
 the creature from then on.
 
+### Rehearsing on a testnet
+
+PumpClaw is deployed on **Base mainnet only**. Since `hatch()` needs it and
+every economic function is gated on `hatched`, a naive testnet deploy would
+produce a creature that can never do anything. So the PumpClaw addresses are
+constructor-injected, and a testnet deploy stands up mocks automatically:
+
+```bash
+PRIVATE_KEY=0x... CHAIN=baseSepolia npm run deploy
+```
+
+That deploys `MockPumpClawFactory` / `MockPumpClawLocker` — same interfaces,
+same 80/20 creator split, same native-ETH payout — then the creature against
+them. The mock locker adds one function the real one has no need for:
+
+```bash
+# stand in for trading volume, so the testnet creature earns its own income
+cast send <locker> "accrue(address)" <token> --value 0.05ether
+# then anyone can pull the 80% creator share into the creature
+cast send <creature> "feed()"
+```
+
+The deploy script **refuses to substitute mocks on mainnet** — the creature's
+income depends on the real factory and locker, and a mocked mainnet creature
+would be worthless. Mocks live in
+[`contracts/MockPumpClaw.sol`](contracts/MockPumpClaw.sol) and are never
+deployed by the mainnet path.
+
 ## Verified against real Base state
 
 The contract was exercised on a Base mainnet fork against the **live PumpClaw
@@ -155,6 +184,12 @@ full honest-worker path, a challenged-and-slashed worker, worker timeout,
 binding governance including voting in a new training corpus, the on-chain
 dataset pin, and treasury solvency. The keeper/worker daemon then drove a real
 epoch from `openEpoch()` to a finalized on-chain release.
+
+The testnet path is verified separately on a bare Base-Sepolia-shaped chain: the
+creature is born hibernating, simulated trading fees are accrued on its token,
+a permissionless `feed()` pulls exactly the 80% creator share, it wakes, and
+`openEpoch()` becomes reachable — the thing that was impossible while the
+PumpClaw addresses were hardcoded.
 
 ## Economics, plainly
 

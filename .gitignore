@@ -11,3 +11,5 @@ __pycache__/
 .venv/
 .DS_Store
 data/live_cache.json
+.testnet-key
+deployment.json

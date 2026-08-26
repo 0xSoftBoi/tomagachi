@@ -28,7 +28,11 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const artifact = JSON.parse(readFileSync(join(here, "..", "artifacts", "Tomagachi.json"), "utf8"));
+const art = (n: string) =>
+  JSON.parse(readFileSync(join(here, "..", "artifacts", `${n}.json`), "utf8"));
+const artifact = art("Tomagachi");
+
+const ZERO = "0x0000000000000000000000000000000000000000" as const;
 
 const chainKey = process.env.CHAIN ?? "base";
 const chain = chainKey === "baseSepolia" ? baseSepolia : base;
@@ -55,6 +59,23 @@ if (!datasetHash) {
   datasetHash = `0x${createHash("sha256").update(readFileSync(datasetPath)).digest("hex")}`;
 }
 
+// PumpClaw only exists on Base mainnet. On any other chain the creature would
+// deploy and then be unable to hatch — and everything economic is gated on
+// hatching — so a testnet deploy stands up mocks first.
+const isMainnet = chain.id === base.id;
+let factory = (process.env.FACTORY ?? ZERO) as `0x${string}`;
+let locker = (process.env.LOCKER ?? ZERO) as `0x${string}`;
+const wantMocks = !isMainnet && factory === ZERO && locker === ZERO;
+if (wantMocks && process.env.NO_MOCKS) {
+  throw new Error("no PumpClaw on this chain and NO_MOCKS is set; pass FACTORY/LOCKER");
+}
+if (isMainnet && (process.env.FACTORY || process.env.LOCKER)) {
+  throw new Error(
+    "refusing to substitute PumpClaw on mainnet — the creature's income depends " +
+      "on the real factory and locker"
+  );
+}
+
 const name = process.env.NAME ?? "Suwappu Tomagachi";
 const symbol = process.env.SYMBOL ?? "SUWA";
 const supply = BigInt(process.env.SUPPLY ?? "1000000000") * 10n ** 18n;
@@ -68,10 +89,33 @@ console.log(`  metabolism   : ${formatEther(metabolism)} ETH/day`);
 console.log(`  full belly   : ${formatEther(maxSatiety)} ETH`);
 console.log(`  dataset      : ${datasetHash}`);
 
+if (wantMocks) {
+  console.log(`\n${chain.name} has no PumpClaw — deploying mocks for the rehearsal`);
+  const lockerArt = art("MockPumpClawLocker");
+  let h = await wallet.deployContract({
+    abi: lockerArt.abi, bytecode: lockerArt.bytecode, args: [account.address],
+  });
+  locker = (await client.waitForTransactionReceipt({ hash: h })).contractAddress!;
+
+  const facArt = art("MockPumpClawFactory");
+  h = await wallet.deployContract({
+    abi: facArt.abi, bytecode: facArt.bytecode, args: [locker],
+  });
+  factory = (await client.waitForTransactionReceipt({ hash: h })).contractAddress!;
+
+  const { request } = await client.simulateContract({
+    address: locker, abi: lockerArt.abi, functionName: "setFactory",
+    args: [factory], account,
+  });
+  await client.waitForTransactionReceipt({ hash: await wallet.writeContract(request) });
+  console.log(`  mock locker  : ${locker}`);
+  console.log(`  mock factory : ${factory}`);
+}
+
 const deployHash = await wallet.deployContract({
   abi: artifact.abi,
   bytecode: artifact.bytecode,
-  args: [metabolism, maxSatiety, datasetHash],
+  args: [metabolism, maxSatiety, datasetHash, factory, locker],
 });
 const receipt = await client.waitForTransactionReceipt({ hash: deployHash });
 const tomagachi = receipt.contractAddress!;
@@ -112,10 +156,20 @@ const out = {
   nom,
   token,
   datasetHash,
+  pumpclawFactory: factory === ZERO ? "base-mainnet-default" : factory,
+  pumpclawLocker: locker === ZERO ? "base-mainnet-default" : locker,
+  mocked: wantMocks,
   deployedAt: new Date().toISOString(),
   deployTx: deployHash,
 };
 const path = join(here, "..", "deployment.json");
 writeFileSync(path, JSON.stringify(out, null, 2));
+if (wantMocks) {
+  console.log(
+    `\nNOTE: this creature runs on MOCK PumpClaw. Simulate trading income with\n` +
+      `  cast send ${locker} "accrue(address)" ${token} --value 0.01ether\n` +
+      `then anyone can call feed() to pull 80% of it into the creature.`
+  );
+}
 console.log(`\nwrote agent/deployment.json — copy it into web/ to light up the page`);
 console.log(`explorer: ${chain.blockExplorers.default.url}/address/${tomagachi}`);
