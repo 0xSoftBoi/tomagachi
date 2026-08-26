@@ -31,7 +31,7 @@
         "readiness-probe"
       ],
       "verify": "a single transient failure is retried and succeeds; repeated failures open the breaker and return 503 fast rather than hanging",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "graceful-drain",

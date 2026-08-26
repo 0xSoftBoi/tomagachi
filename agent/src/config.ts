@@ -99,6 +99,11 @@ export const config = {
   /** How long a readiness probe result stands before we ask the GPU again. */
   readinessCacheMs: Number(process.env.READINESS_CACHE_MS ?? 5_000),
   readinessTimeoutMs: Number(process.env.READINESS_TIMEOUT_MS ?? 3_000),
+  /** Extra attempts after the first. One turns a dropped connection into a completion. */
+  upstreamRetries: Number(process.env.UPSTREAM_RETRIES ?? 1),
+  /** Consecutive upstream failures before we stop attempting at all. */
+  breakerThreshold: Number(process.env.BREAKER_THRESHOLD ?? 5),
+  breakerCooldownMs: Number(process.env.BREAKER_COOLDOWN_MS ?? 10_000),
 
   /** The GPU underneath: any OpenAI-compatible server (vLLM with one LoRA per SKU). */
   upstreamBaseUrl: process.env.UPSTREAM_BASE_URL ?? "http://localhost:8000/v1",

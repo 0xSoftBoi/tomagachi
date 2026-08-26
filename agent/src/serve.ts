@@ -29,6 +29,7 @@ import { providerManifest } from "./provider-manifest.js";
 import { SseTally } from "./stream.js";
 import { RateLimiter } from "./ratelimit.js";
 import { UpstreamHealth, httpProbe } from "./health.js";
+import { BreakerOpenError, CircuitBreaker, withRetry } from "./resilience.js";
 
 interface ChatMessage {
   role: string;
@@ -45,6 +46,9 @@ interface ChatRequest {
 
 /** The declared ceiling, enforced. Shared, because the GPU is. */
 const limiter = new RateLimiter(config.capacityRequestsPerMinute);
+
+/** Opens after repeated upstream failures so we stop hammering a dead GPU. */
+const breaker = new CircuitBreaker(config.breakerThreshold, config.breakerCooldownMs);
 
 /** Whether the GPU behind us is answering. Cached; orchestrators poll hard. */
 const health = new UpstreamHealth(
@@ -114,7 +118,7 @@ export function composeMessages(character: Character, body: ChatRequest, session
   return [...head, ...rest];
 }
 
-async function upstreamChat(payload: unknown, stream: boolean): Promise<Response> {
+async function attemptUpstream(payload: unknown, stream: boolean): Promise<Response> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (config.upstreamApiKey) headers.authorization = `Bearer ${config.upstreamApiKey}`;
   const res = await fetch(`${config.upstreamBaseUrl}/chat/completions`, {
@@ -124,7 +128,11 @@ async function upstreamChat(payload: unknown, stream: boolean): Promise<Response
   });
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 400);
-    const err = new Error(`upstream ${res.status}: ${detail}`) as Error & { status?: number };
+    const err = new Error(`upstream ${res.status}: ${detail}`) as Error & {
+      status?: number;
+      upstreamStatus?: number;
+    };
+    err.upstreamStatus = res.status;
     // Saturation is not downtime. Passing 429 through keeps it out of the
     // uptime score, and returning it early beats queueing behind a full GPU.
     if (res.status === 429 || res.status === 503) err.status = 429;
@@ -132,6 +140,21 @@ async function upstreamChat(payload: unknown, stream: boolean): Promise<Response
   }
   if (stream && !res.body) throw new Error("upstream returned no stream body");
   return res;
+}
+
+/**
+ * One retry, then the breaker. A dropped connection is worth another attempt;
+ * a GPU that has failed five times in a row is not, and every request we do
+ * not send it is one the caller does not wait out a timeout for.
+ */
+function upstreamChat(payload: unknown, stream: boolean): Promise<Response> {
+  return withRetry(() => attemptUpstream(payload, stream), {
+    retries: config.upstreamRetries,
+    breaker,
+    cooldownMs: config.breakerCooldownMs,
+    onRetry: (e, attempt) =>
+      console.warn(`[serve] upstream attempt ${attempt} failed (${e?.message ?? e}) — retrying`),
+  });
 }
 
 async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string): Promise<void> {
@@ -187,6 +210,10 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string
     if (e.status === 429) {
       res.setHeader("retry-after", "1");
       return fail(res, 429, "the fleet is at capacity — retry shortly", "rate_limit_error");
+    }
+    if (e instanceof BreakerOpenError) {
+      res.setHeader("retry-after", String(Math.ceil(config.breakerCooldownMs / 1000)));
+      return fail(res, 503, e.message, "upstream_error");
     }
     return fail(res, 502, `inference backend unavailable: ${e.message}`, "upstream_error");
   }
@@ -301,13 +328,18 @@ export function startServer(): void {
     // Readiness: we can actually serve. 503 here keeps a router from sending
     // requests that would come back 5xx and count against uptime.
     if (path === "/ready") {
-      return health.status().then((r) =>
-        json(res, r.ready ? 200 : 503, {
-          ready: r.ready,
-          detail: r.detail,
+      return health.status().then((r) => {
+        // An open breaker means we are refusing to attempt requests. Reporting
+        // ready while doing that would be a lie the router pays for.
+        const breakerOpen = breaker.state === "open";
+        const ready = r.ready && !breakerOpen;
+        json(res, ready ? 200 : 503, {
+          ready,
+          detail: breakerOpen ? "upstream circuit open" : r.detail,
+          breaker: breaker.state,
           checkedAt: new Date(r.checkedAt).toISOString(),
-        })
-      );
+        });
+      });
     }
     if (path === "/metrics") {
       return json(res, 200, {
