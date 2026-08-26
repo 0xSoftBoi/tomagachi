@@ -1,7 +1,7 @@
 # Suwappu Tomagachi
 
-> An on-chain creature that eats stablecoins, buys decentralized compute, and
-> trains an open-source **world model** for its community.
+> An on-chain creature that eats stablecoins, buys compute, trains **character
+> models**, and sells them back to the world to feed itself.
 
 Built on [Suwappu](https://suwappu.bot) — the cross-chain DeFi API for AI
 agents. The creature lives as a contract on **Base**; its brain is an
@@ -9,16 +9,19 @@ autonomous agent that turns every token you feed it into training compute.
 
 ```
         you                     the creature                the community
-   ┌───────────┐   feed USDC   ┌────────────────┐  weights ┌──────────────┐
-   │ any wallet ├──────────────► Tomagachi.sol  ├──────────► SUWA-WM       │
-   └─────┬─────┘   mints NOM   │  (Base)        │  + hash   │ open weights │
+   ┌───────────┐   feed USDC   ┌────────────────┐  hash +  ┌──────────────┐
+   │ any wallet ├──────────────► Tomagachi.sol  ├──────────► SUWA-LM       │
+   └─────┬─────┘   mints NOM   │  (Base)        │  score    │ 5 characters │
          │                     │ satiety/energy │  on-chain │ Apache-2.0   │
-   any token                   └──────┬─────────┘           └──────────────┘
-         │                            │ buyCompute (USDC, audited)
-   ┌─────▼──────────┐          ┌──────▼─────────┐
-   │ brain (agent/) │ suwappu  │ GPU providers  │
-   │ swaps → USDC   ├──────────► local / remote │
-   └────────────────┘  API     └────────────────┘
+   any token                   └──────┬─────────┘           │ after 90 days│
+         │                            │ buyCompute          └──────┬───────┘
+   ┌─────▼──────────┐          ┌──────▼─────────┐                  │ adapters
+   │ brain (agent/) │ suwappu  │ GPU providers  │           ┌──────▼───────┐
+   │ swaps → USDC   ├──────────► local / remote │           │ the shop     │
+   └────────────────┘  API     └────────────────┘           │ /v1/chat/... │
+              ▲                                             └──────┬───────┘
+              │                  revenue — the creature feeds itself│
+              └──────────────────────────────────────────────────────┘
 ```
 
 ## The game
@@ -33,18 +36,28 @@ autonomous agent that turns every token you feed it into training compute.
 - **It works for its food.** 100% of fed USDC is compute budget. The brain
   buys GPU time with `buyCompute(to, amount, provider, jobRef)` — every cent
   leaving the creature is an on-chain, auditable record.
+- **It earns.** What it trains, it sells: the shop (`agent/src/serve.ts`) is an
+  OpenAI-compatible endpoint any app can call, priced per character. Revenue is
+  food, so a creature with customers stops starving.
 - **It learns in public.** Each training epoch ends with
   `checkpoint(epoch, sha256, uri, loss, spent)` on-chain. Anyone can
   `sha256sum` the released weights against the chain.
 - **You steer it.** NOM holders `propose()` and `vote()` on training
   directions — bigger worlds, new dynamics, scaling runs.
 
-## The model — SUWA-WM
+## The models — SUWA-LM, and the dream
 
-Not an LLM. An action-conditioned **latent world model** (Dreamer/RSSM lineage
-with a JEPA-style predict-the-embedding objective) trained on the Reef, a
-procedural ocean world. Fully open weights, Apache-2.0, warm-started every
-epoch so community compute compounds into one model. See [`model/`](model/).
+**SUWA-LM** is the product: one frozen base with a small LoRA adapter per
+character, five of them sharing a single GPU. Each release carries a
+reproducible eval score alongside its hash, so the on-chain checkpoint is a
+performance claim a buyer can re-derive rather than a receipt. Weights go
+Apache-2.0 on a 90-day lag.
+
+**SUWA-WM** is the dream the creature still has: an action-conditioned latent
+world model of the Reef, a procedural ocean. It is kept because it is what the
+creature is *for* — not because anyone will pay for it. Why that distinction
+matters, with the market data behind it, is in
+[`research/`](research/model-economics.md). See [`model/`](model/) for both.
 
 ## Repo layout
 
@@ -52,8 +65,11 @@ epoch so community compute compounds into one model. See [`model/`](model/).
 |---|---|
 | [`contracts/Tomagachi.sol`](contracts/Tomagachi.sol) | the creature + NOM token (self-contained, no deps) |
 | [`agent/`](agent/) | the brain: Suwappu swaps, compute brokerage, on-chain ops |
-| [`model/`](model/) | SUWA-WM: env, model, training, HF release |
+| [`agent/src/serve.ts`](agent/src/serve.ts) | the shop: OpenAI-compatible endpoint, pricing, usage ledger |
+| [`model/`](model/) | SUWA-LM character adapters, SUWA-WM world model |
 | [`web/`](web/) | live vitals page (static, reads Base directly) |
+| [`deploy/`](deploy/) | vLLM config, preflight tests, the listing checklist |
+| [`research/`](research/) | market scans, unit economics, the operating plan |
 
 ## Go live
 
@@ -68,9 +84,17 @@ cp .env.example .env                       # fill in OPERATOR_KEY etc.
 pip install -r ../model/requirements.txt   # trainer deps (torch, numpy)
 OPERATOR_KEY=0x... npm start
 
-# 3. face — host web/ anywhere static, with deployment.json alongside
+# 3. shop — the endpoint that sells what it trains
+UPSTREAM_BASE_URL=http://localhost:8000/v1 npm run serve   # any vLLM-style host
+curl localhost:8080/v1/models                              # five characters
+curl localhost:8080/metrics                                # realized $/M, GPU util, apps
+
+# 4. face — host web/ anywhere static, with deployment.json alongside
 cp deployment.json ../web/ && npx serve ../web
 ```
+
+`npm start` runs the brain and the shop together; `SERVE=0` runs the brain
+alone, for when the GPU box serves and shouldn't hold the operator key.
 
 The brain self-registers with the Suwappu Agent API on first boot
 (`POST /register`) and persists its key in `agent/state/state.json`
@@ -87,14 +111,25 @@ creature starts paying for its own GPUs on-chain.
 - The creature's USDC can only exit via `buyCompute` (operator-only,
   awake-only, fully logged). Metabolism burns appetite, never money.
 - The product is the **open model**: every stablecoin fed becomes public,
-  verifiable weights.
+  verifiable weights — on a 90-day lag, so releasing them doesn't hand the
+  revenue to whichever host picks them up first.
+- Inference revenue is what makes the loop close. It is billed by an operating
+  entity, not by the contract: routers pay providers by invoice, and NOM stays
+  non-revenue-bearing. Get counsel before any of this touches money.
+- Feeding is one-way today: the creature spends and never earns. Whether that
+  should change — and what a model would have to be to earn — is worked out with
+  live market data in [`research/model-economics.md`](research/model-economics.md),
+  and costed as an operating plan in
+  [`research/operating-plan.md`](research/operating-plan.md).
 
 ## Roadmap
 
+- [x] Character adapters, an eval score per release, and the shop that sells them
+- [ ] Get listed: apply as a provider, first traffic, first dollar
+- [ ] Memory layer v2 — summarize sessions on the same GPU that serves them
 - [ ] Adapters for specific decentralized GPU markets (Akash, io.net, Nosana)
-- [ ] x402 pay-per-job compute settlement (Suwappu already speaks it)
-- [ ] Scale the Reef by governance vote: 32×32, pixel obs, multi-agent
+- [ ] x402 pay-per-call inference, so revenue can settle back to the contract
 - [ ] Telegram front-end via the Suwappu bot: feed & check vitals in chat
-- [ ] Verifiable training (proof-of-learning attestations per epoch)
+- [ ] Scale the Reef by governance vote — the dream, when the shop can pay for it
 
 MIT (code) / Apache-2.0 (model weights).

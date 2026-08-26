@@ -6,9 +6,13 @@
  *      gets swapped to USDC through Suwappu (self-custody: quote -> unsigned
  *      tx -> sign locally -> broadcast), then fed to the creature.
  *   3. Feed any loose USDC in the wallet straight in.
- *   4. If awake and energetic, buy compute (on-chain record first) and run a
- *      training epoch of SUWA-WM.
+ *   4. If awake and energetic, buy compute (on-chain record first) and train
+ *      one epoch of the next character adapter in the rotation.
  *   5. Post the checkpoint hash on-chain. Say something.
+ *
+ * The shop (src/serve.ts) runs alongside and sells what these epochs produce;
+ * its week shows up in the [shop] line next to vitals, because in this design
+ * revenue is food.
  */
 import { formatUnits, erc20Abi } from "viem";
 import { join } from "node:path";
@@ -16,6 +20,8 @@ import { config } from "./config.js";
 import { loadState, saveState } from "./state.js";
 import { Creature } from "./chain.js";
 import { makeProvider } from "./compute.js";
+import { catalog as characterCatalog } from "./characters.js";
+import { metrics } from "./usage.js";
 import * as suwappu from "./suwappu.js";
 
 const LINES: Record<string, string[]> = {
@@ -49,6 +55,15 @@ export class Brain {
         `[vitals] mood=${v.mood} satiety=${formatUnits(v.satiety, 6)} ` +
           `energy=${formatUnits(v.energy, 6)} USDC epochs=${v.epochs}`
       );
+
+      const m = metrics();
+      if (m.requests > 0) {
+        console.log(
+          `[shop] 7d: ${(m.tokens / 1e6).toFixed(1)}M tokens $${m.grossUsd.toFixed(2)} ` +
+            `at $${m.realizedUsdPerM.toFixed(2)}/M · gpu ${(m.gpuUtilization * 100).toFixed(0)}% ` +
+            `· ${m.apps.length} apps`
+        );
+      }
 
       await this.sweepDonations().catch((e) =>
         console.warn(`[sweep] ${e.message}`)
@@ -127,10 +142,21 @@ export class Brain {
     }
   }
 
+  /** Which SKU this epoch belongs to: round-robin, so the fleet grows evenly. */
+  nextCharacter(epoch: number): string | undefined {
+    if (config.trainTarget !== "adapter") return undefined;
+    const rotation = config.characterRotation.length
+      ? config.characterRotation
+      : characterCatalog().characters.map((c) => c.id);
+    if (!rotation.length) throw new Error("no characters in model/characters.json");
+    return rotation[(epoch - 1) % rotation.length];
+  }
+
   async trainEpoch(cost: bigint): Promise<void> {
     const state = loadState();
     const epoch = state.epoch + 1;
-    const jobRef = `suwa-wm-epoch-${epoch}`;
+    const character = this.nextCharacter(epoch);
+    const jobRef = character ? `${character}-epoch-${epoch}` : `suwa-wm-epoch-${epoch}`;
     const outDir = join(config.runsDir, jobRef);
 
     // 1. Pay for compute ON-CHAIN first — the purchase is the public record.
@@ -151,13 +177,17 @@ export class Brain {
     saveState(state);
 
     // 2. Train.
-    const result = await this.provider.run({ epoch, steps: config.stepsPerEpoch, outDir });
+    const steps = character ? config.stepsPerAdapterEpoch : config.stepsPerEpoch;
+    const result = await this.provider.run({ epoch, steps, outDir, character });
 
     // 3. Checkpoint on-chain: hash of the open weights + where to get them.
     const uri = config.hfRepo
       ? `https://huggingface.co/${config.hfRepo}`
       : `run://${jobRef}`;
-    const lossMilli = BigInt(Math.round(result.manifest.final_loss * 1000));
+    // Adapters post held-out loss, which is the number a buyer can reproduce;
+    // the world model only ever had a training loss to give.
+    const reportedLoss = result.manifest.held_out_loss ?? result.manifest.final_loss;
+    const lossMilli = BigInt(Math.round(reportedLoss * 1000));
     const h = await this.creature.checkpoint(
       BigInt(epoch),
       `0x${result.manifest.sha256}` as `0x${string}`,
@@ -165,8 +195,10 @@ export class Brain {
       lossMilli,
       cost
     );
+    const scoreNote =
+      result.manifest.score !== undefined ? ` score=${result.manifest.score.toFixed(3)}` : "";
     console.log(
-      `[checkpoint] epoch ${epoch} loss=${result.manifest.final_loss.toFixed(4)} ` +
+      `[checkpoint] ${jobRef} loss=${reportedLoss.toFixed(4)}${scoreNote} ` +
         `sha256=${result.manifest.sha256.slice(0, 12)}… tx=${h}`
     );
 
@@ -174,8 +206,10 @@ export class Brain {
     state.activeJob = undefined;
     saveState(state);
 
-    await this.creature
-      .speak(`epoch ${epoch} complete. loss ${result.manifest.final_loss.toFixed(3)}. i dream a little sharper now.`)
-      .catch(() => {});
+    const words = character
+      ? `${character} epoch ${epoch}: score ${(result.manifest.score ?? 0).toFixed(3)}. ` +
+        `i am a little more myself.`
+      : `epoch ${epoch} complete. loss ${reportedLoss.toFixed(3)}. i dream a little sharper now.`;
+    await this.creature.speak(words).catch(() => {});
   }
 }
