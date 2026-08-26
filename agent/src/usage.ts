@@ -14,6 +14,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
 import type { Character } from "./characters.js";
+import { gpuSeconds, marginPct, marginalCost } from "./cost.js";
 
 export interface UsageRow {
   at: string;
@@ -22,6 +23,9 @@ export interface UsageRow {
   promptTokens: number;
   completionTokens: number;
   revenueUsd: number;
+  /** GPU time this request consumed, and what that time cost. */
+  gpuSeconds?: number;
+  costUsd?: number;
   latencyMs: number;
 }
 
@@ -51,11 +55,18 @@ export function priceOf(character: Character, promptTokens: number, completionTo
   return (promptTokens * prompt + completionTokens * completion) / 1e6;
 }
 
-export function record(row: Omit<UsageRow, "at" | "revenueUsd">, character: Character): UsageRow {
+export function record(
+  row: Omit<UsageRow, "at" | "revenueUsd" | "gpuSeconds" | "costUsd">,
+  character: Character
+): UsageRow {
   load();
   const full: UsageRow = {
     at: new Date().toISOString(),
     revenueUsd: priceOf(character, row.promptTokens, row.completionTokens),
+    // Stored rather than derived at read time, so a later price or hardware
+    // change does not silently rewrite what past requests appeared to cost.
+    gpuSeconds: round(gpuSeconds(row.promptTokens, row.completionTokens), 6),
+    costUsd: marginalCost(row.promptTokens, row.completionTokens),
     ...row,
   };
   rows.push(full);
@@ -77,9 +88,25 @@ export interface Metrics {
   gpuUtilization: number;
   gpuCostUsd: number;
   contributionUsd: number;
+  /** What the served traffic actually consumed, summed per request. */
+  marginalCostUsd: number;
+  /** Priced above the cost to serve? Flattering, and true almost always. */
+  marginalMarginPct: number | null;
+  /**
+   * Does the week pay for the machine? The number that decides the business.
+   * Early on this is enormously negative and that is the honest reading: the
+   * GPU bills for 168 hours whether or not anyone shows up.
+   */
+  absorbedMarginPct: number | null;
   /** Concentration risk: each logo is worth a lot when ten apps are 78% of a market. */
   apps: { app: string; tokens: number; grossUsd: number }[];
-  byCharacter: { character: string; tokens: number; grossUsd: number }[];
+  byCharacter: {
+    character: string;
+    tokens: number;
+    grossUsd: number;
+    costUsd: number;
+    marginPct: number | null;
+  }[];
   /** Satiety in weeks. Null when no treasury was passed, or when nothing is burning. */
   weeksOfRunway: number | null;
   /** Revenue covers the machine. Phase 1's gate, as a boolean. */
@@ -106,13 +133,19 @@ export function metrics(treasuryUsd?: number): Metrics {
   const capacity = (3600 / secondsPerM) * 1e6 * 168 * config.gpuCount;
   const gpuCostUsd = config.gpuUsdPerHour * 168 * config.gpuCount;
 
+  // Rows written before cost was recorded have none; recomputing from their
+  // token counts is the closest honest answer and beats dropping them.
+  const rowCost = (r: UsageRow) => r.costUsd ?? marginalCost(r.promptTokens, r.completionTokens);
+  const marginalCostUsd = recent.reduce((n, r) => n + rowCost(r), 0);
+
   const group = (key: (r: UsageRow) => string) => {
-    const m = new Map<string, { tokens: number; grossUsd: number }>();
+    const m = new Map<string, { tokens: number; grossUsd: number; costUsd: number }>();
     for (const r of recent) {
       const k = key(r);
-      const cur = m.get(k) ?? { tokens: 0, grossUsd: 0 };
+      const cur = m.get(k) ?? { tokens: 0, grossUsd: 0, costUsd: 0 };
       cur.tokens += r.promptTokens + r.completionTokens;
       cur.grossUsd += r.revenueUsd;
+      cur.costUsd += rowCost(r);
       m.set(k, cur);
     }
     return [...m.entries()]
@@ -132,8 +165,17 @@ export function metrics(treasuryUsd?: number): Metrics {
     gpuUtilization: capacity ? round(tokens / capacity, 6) : 0,
     gpuCostUsd: round(gpuCostUsd, 2),
     contributionUsd: round(contributionUsd, 4),
-    apps: group((r) => r.app).map(({ key, ...v }) => ({ app: key, ...round2(v) })),
-    byCharacter: group((r) => r.character).map(({ key, ...v }) => ({ character: key, ...round2(v) })),
+    marginalCostUsd: round(marginalCostUsd, 4),
+    marginalMarginPct: marginPct(grossUsd, marginalCostUsd),
+    absorbedMarginPct: marginPct(grossUsd, gpuCostUsd),
+    apps: group((r) => r.app).map(({ key, costUsd, ...v }) => ({ app: key, ...round2(v) })),
+    byCharacter: group((r) => r.character).map(({ key, ...v }) => ({
+      character: key,
+      tokens: v.tokens,
+      grossUsd: round(v.grossUsd, 4),
+      costUsd: round(v.costUsd, 4),
+      marginPct: marginPct(v.grossUsd, v.costUsd),
+    })),
     weeksOfRunway: weeksOfRunway(treasuryUsd, grossUsd, gpuCostUsd),
     selfSustaining: grossUsd >= gpuCostUsd,
   };

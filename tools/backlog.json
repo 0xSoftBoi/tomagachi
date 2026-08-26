@@ -93,7 +93,7 @@
       "why": "The ledger knows what we charged and nothing about what it cost. Margin per character is what decides which SKUs to keep, and it is currently unknowable.",
       "needs": [],
       "verify": "each row carries a GPU-seconds estimate and a derived cost; /metrics reports margin overall and per character",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "metrics-history",
