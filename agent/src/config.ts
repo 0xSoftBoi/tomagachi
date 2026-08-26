@@ -162,6 +162,8 @@ export const config = {
    */
   complianceZdr: process.env.COMPLIANCE_ZDR === "1",
 
+  /** How many days of history /metrics reports, and how far back rows stay in memory. */
+  historyDays: Number(process.env.HISTORY_DAYS ?? 28),
   /** Ledger and session store. Overridable so tests and containers can isolate it. */
   /** Where exported PEFT adapters land for vLLM to load. */
   servingDir: process.env.SERVING_DIR ?? join(repoRoot, "serving"),

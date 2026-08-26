@@ -103,7 +103,7 @@
         "margin-per-request"
       ],
       "verify": "/metrics returns a daily series; the vitals page sparklines revenue and utilization; rollups survive a restart",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "x402-route",

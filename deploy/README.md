@@ -65,7 +65,7 @@ UPSTREAM_BASE_URL=http://localhost:8000/v1 npm run serve
 | `GET /provider/models` | the schema 2.4 manifest a router reads |
 | `GET /v1/models` | the OpenAI-shaped list for everyone else |
 | `POST /v1/chat/completions` | streaming and non-streaming, with real `usage` |
-| `GET /metrics` | realized $/M, GPU utilization, tokens, apps, runway |
+| `GET /metrics` | realized $/M, GPU utilization, tokens, apps, runway, margin, daily series |
 | `GET /healthz` | liveness — never touches the network |
 | `GET /ready` | readiness — 503 when the GPU behind it is not answering |
 

@@ -23,7 +23,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { config } from "./config.js";
 import { catalog, findCharacter, type Character } from "./characters.js";
-import { metrics, record } from "./usage.js";
+import { daily, metrics, record } from "./usage.js";
 import { recall, remember } from "./memory.js";
 import { providerManifest } from "./provider-manifest.js";
 import { SseTally } from "./stream.js";
@@ -376,6 +376,7 @@ export function startServer(): void {
       return json(res, 200, {
         ...metrics(),
         capacity: { limitPerMinute: limiter.limit, inWindow: limiter.inWindow },
+        daily: daily(),
       });
     }
     // Schema 2.4. This is what a router reads; /v1/models is for everyone else.

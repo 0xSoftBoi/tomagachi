@@ -30,6 +30,7 @@ export interface UsageRow {
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const ledgerPath = () => join(config.stateDir, "usage.jsonl");
 
 let rows: UsageRow[] = [];
@@ -40,10 +41,14 @@ function load(): void {
   loaded = true;
   const p = ledgerPath();
   if (!existsSync(p)) return;
+  // The file is the record and keeps everything; memory only needs as far back
+  // as anything is reported over, or a long-running shop grows without bound.
+  const horizon = Date.now() - config.historyDays * DAY_MS;
   for (const line of readFileSync(p, "utf8").split("\n")) {
     if (!line.trim()) continue;
     try {
-      rows.push(JSON.parse(line));
+      const row: UsageRow = JSON.parse(line);
+      if (Date.parse(row.at) >= horizon) rows.push(row);
     } catch {
       // A truncated final line after a hard kill is not worth crashing over.
     }
@@ -111,6 +116,54 @@ export interface Metrics {
   weeksOfRunway: number | null;
   /** Revenue covers the machine. Phase 1's gate, as a boolean. */
   selfSustaining: boolean;
+}
+
+export interface DailyPoint {
+  /** UTC day, YYYY-MM-DD. */
+  date: string;
+  tokens: number;
+  requests: number;
+  grossUsd: number;
+  costUsd: number;
+  realizedUsdPerM: number;
+}
+
+/**
+ * One point per UTC day, oldest first, with empty days included.
+ *
+ * A seven-day total cannot answer the question the gate turns on: is this
+ * growing. Ten weeks of flat and ten weeks of climbing produce the same
+ * running total and call for opposite decisions. Empty days are kept as zeros
+ * for the same reason — a gap that silently closes up reads as continuity.
+ */
+export function daily(days = config.historyDays): DailyPoint[] {
+  load();
+  const today = Math.floor(Date.now() / DAY_MS);
+  const buckets = new Map<string, DailyPoint>();
+
+  for (let i = days - 1; i >= 0; i--) {
+    const date = new Date((today - i) * DAY_MS).toISOString().slice(0, 10);
+    buckets.set(date, { date, tokens: 0, requests: 0, grossUsd: 0, costUsd: 0, realizedUsdPerM: 0 });
+  }
+
+  for (const r of rows) {
+    const date = r.at.slice(0, 10);
+    const bucket = buckets.get(date);
+    if (!bucket) continue; // older than the window
+    bucket.tokens += r.promptTokens + r.completionTokens;
+    bucket.requests += 1;
+    bucket.grossUsd += r.revenueUsd;
+    bucket.costUsd += r.costUsd ?? marginalCost(r.promptTokens, r.completionTokens);
+  }
+
+  return [...buckets.values()].map((b) => ({
+    ...b,
+    // Six places, not four: a day early on is worth fractions of a cent, and
+    // rounding $0.00028 to $0.0003 loses the very movement the chart is for.
+    grossUsd: round(b.grossUsd, 6),
+    costUsd: round(b.costUsd, 6),
+    realizedUsdPerM: b.tokens ? round((b.grossUsd / b.tokens) * 1e6, 4) : 0,
+  }));
 }
 
 /** `treasuryUsd` comes from the chain, so runway is only known when the brain asks. */
