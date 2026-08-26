@@ -38,15 +38,41 @@ async function cashOutIfFlush() {
   await cashOut(creature, bal - config.cashOutAboveWei);
 }
 
+/** An unreachable RPC is the common failure in the wild, and viem reports it
+ *  as a bare "HTTP request failed" that tells an operator nothing. */
+function describe(e: any): string {
+  const raw = String(e?.details ?? e?.cause?.message ?? e?.message ?? e);
+  if (/ECONNREFUSED|ECONNRESET|fetch failed|ETIMEDOUT|ENOTFOUND|socket hang up/i.test(raw)) {
+    return `RPC unreachable at ${config.rpcUrl ?? creature.chain.rpcUrls.default.http[0]}`;
+  }
+  return e?.shortMessage ?? e?.message ?? raw;
+}
+
+const MAX_BACKOFF_MS = 10 * 60 * 1000;
+let failures = 0;
+
 async function loop() {
+  let delay = config.pollMs;
   try {
     if (config.runKeeper) await keeper.tick();
     if (config.runWorker) await worker.tick();
     await cashOutIfFlush().catch((e) => console.warn(`[suwappu] ${e.message}`));
+    if (failures > 0) {
+      console.log(`[tick] recovered after ${failures} failed poll(s)`);
+      failures = 0;
+    }
   } catch (e: any) {
-    console.error(`[tick] ${e.shortMessage ?? e.message ?? e}`);
+    failures++;
+    // Back off instead of hammering a dead endpoint, and stop repeating
+    // ourselves — an outage should not bury the log it is reported in.
+    delay = Math.min(config.pollMs * 2 ** Math.min(failures, 6), MAX_BACKOFF_MS);
+    if (failures === 1 || failures % 10 === 0) {
+      console.error(
+        `[tick] ${describe(e)} (failure ${failures}, retrying in ${Math.round(delay / 1000)}s)`
+      );
+    }
   }
-  setTimeout(loop, config.pollMs);
+  setTimeout(loop, delay);
 }
 
 loop();
