@@ -96,6 +96,11 @@ export const config = {
   serveApiKey: process.env.SERVE_API_KEY,
   serveContextLength: Number(process.env.SERVE_CONTEXT_LENGTH ?? 32768),
   serveMaxBodyBytes: Number(process.env.SERVE_MAX_BODY_BYTES ?? 2_000_000),
+
+  // `n` multiplies completion tokens without multiplying anything the caller
+  // said, so it is the cheapest way to make one request cost like a hundred.
+  // Roleplay clients ask for one completion; a handful covers regeneration UIs.
+  serveMaxChoices: Number(process.env.SERVE_MAX_CHOICES ?? 4),
   /** Origin allowed to read /healthz, /ready and /metrics. Billing routes never share. */
   statusCorsOrigin: process.env.STATUS_CORS_ORIGIN ?? "*",
   /** How long a readiness probe result stands before we ask the GPU again. */
