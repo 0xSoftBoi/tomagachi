@@ -40,21 +40,23 @@ window to route a swap?"*
 ```json
 {
   "symbol": "ETH",
-  "price_usd": 2449.32,
+  "price_usd": 2467.35,
   "horizon_hours": 6,
-  "expected_drift": -0.0004,
-  "expected_move": 0.0160,
-  "baseline_move": 0.0113,
-  "risk_ratio": 1.42,
-  "slippage_hint_bps": 80.0,
+  "expected_drift": 0.0009,
+  "expected_move": 0.0179,
+  "baseline_move": 0.0111,
+  "risk_ratio": 1.61,
+  "slippage_hint_bps": 89.0,
   "verdict": "elevated risk - widen slippage or wait"
 }
 ```
 
-`expected_move` is a 1-sigma 6-hour log return. `risk_ratio` compares it with
-the asset's own trailing volatility, so >1 means unusually dangerous *for that
-asset*. `slippage_hint_bps` is half a sigma in basis points — a starting point,
-not a guarantee.
+`expected_move` is a 1-sigma 6-hour log return, and it is **calibrated**:
+across 8 walk-forward runs the ratio of realised to predicted move lands at
+1.004, where 1.0 is perfect. `risk_ratio` compares it with the asset's own
+trailing volatility, so >1 means unusually dangerous *for that asset*.
+`slippage_hint_bps` is half a sigma in basis points — a starting point, not a
+guarantee.
 
 **Read `expected_drift` as noise.** The model has no measurable directional
 edge (see [`../model/README.md`](../model/README.md)); it is published for
@@ -68,6 +70,7 @@ completeness, not for trading.
 | `RPC_URL` | `https://mainnet.base.org` |
 | `DEPLOYMENT` | `agent/deployment.json` |
 
-Live market data is fetched from CoinGecko and cached for 10 minutes; pass
+Live market data is fetched from the Coinbase Exchange public API and cached
+for 10 minutes; pass
 `{"refresh": true}` to force a re-pull. `creature_vitals` needs a deployed
 creature — it reports plainly when there isn't one instead of failing.

@@ -110,15 +110,16 @@ def main() -> None:
     print(f"dataset {data_path.name} sha256={data_sha[:12]}…")
 
     # Imported here so --help stays fast and torch is only loaded when training.
-    from suwa_wm.data import load
-    from suwa_wm.dataset import CONTEXT, HORIZON, Windows
+    from suwa_wm.dataset import HORIZON
     from suwa_wm.model import D_MODEL, SuwaExecutionModel
 
     sys.path.insert(0, str(REPO / "model"))
-    from finetune import fit_har, report, train_model
+    from finetune import N_SCALES, build_windows, fit_har, report, train_model
 
-    feats, price, symbols = load(str(data_path))
-    w = Windows(feats, price, CONTEXT)
+    # build_windows loads the highs and lows too. Without them the anchors fall
+    # back to close-to-close and the model would be fed inputs that do not match
+    # what it was trained on — silently, and wrongly.
+    w, symbols = build_windows(str(data_path))
     tr, va, te = w.splits(lookahead=HORIZON)
 
     base = resolve_base(args.base_uri, out, args.epoch)
@@ -130,7 +131,7 @@ def main() -> None:
                 f"base weights do not match the chain: got {actual}, expected {args.base_hash}"
             )
         print(f"warm-starting from {base} (0x{actual[:12]}…)")
-        model = SuwaExecutionModel(w.A, w.F, D_MODEL)
+        model = SuwaExecutionModel(w.A, w.F, D_MODEL, n_scales=N_SCALES)
         model.load_state_dict(ckpt["model"])
         tmp = out / "_base.pt"
         torch.save({"backbone": model.backbone.state_dict()}, tmp)
@@ -147,8 +148,15 @@ def main() -> None:
         print("genesis epoch: pretraining the world model, then fine-tuning")
         from pretrain import run_pretrain
 
-        backbone = run_pretrain(w, max(args.steps // 2, 250), 32, 3e-4, seed, out / "backbone.pt")
-        model, _ = train_model(w, tr, va, max(args.steps // 2, 250), 32, 3e-4, seed, str(backbone))
+        # Walk-forward measurement puts the value of JEPA pretraining at
+        # +0.0004 +/- 0.0012 nats once the corpus is this large — i.e. nothing
+        # detectable. Labels here are free (every hour is labelled), which is
+        # exactly the regime where self-supervision stops paying. So the
+        # genesis epoch spends most of its budget where the gain is, and keeps
+        # a short pretraining pass to initialise the backbone.
+        pre_steps = max(args.steps // 5, 200)
+        backbone = run_pretrain(w, pre_steps, 32, 3e-4, seed, out / "backbone.pt", train_idx=tr)
+        model, _ = train_model(w, tr, va, args.steps - pre_steps, 32, 3e-4, seed, str(backbone))
 
     print("\ntest set:")
     # Fit the HAR benchmark on the training split so every on-chain epoch
@@ -160,7 +168,8 @@ def main() -> None:
     weights_hash = canonical_hash(state)
     torch.save(
         {"model": state, "epoch": args.epoch, "n_assets": w.A, "n_features": w.F,
-         "d_model": D_MODEL, "symbols": symbols, "horizon": HORIZON},
+         "d_model": D_MODEL, "n_scales": N_SCALES, "symbols": symbols,
+         "horizon": HORIZON},
         out / "checkpoint.pt",
     )
     manifest = {

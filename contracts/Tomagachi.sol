@@ -181,6 +181,7 @@ contract Tomagachi {
         uint64 voteEnd;
         bytes32 seed;           // deterministic job seed — makes results checkable
         bytes32 baseHash;       // weights this epoch warm-starts from
+        bytes32 datasetHash;    // the corpus this epoch must be trained on
         uint32 steps;
         uint256 bounty;
         address worker;
@@ -198,6 +199,11 @@ contract Tomagachi {
 
     Epoch[] public epochs;
     mapping(uint256 => mapping(address => bool)) public votedOnEpoch;
+
+    /// The corpus every worker must train on. Pinned here so a worker cannot
+    /// quietly train on different data and produce an unreproducible result:
+    /// the trainer refuses to run unless its dataset hashes to this.
+    bytes32 public datasetHash;
 
     /// Training economics — mutable only by NOM governance.
     uint256 public bountyWei = 0.002 ether;
@@ -220,12 +226,13 @@ contract Tomagachi {
 
     // ─────────────────────────────────────────────────────────── governance
 
-    enum Param { STEPS, BOUNTY, COOLDOWN, METABOLISM, MAX_SATIETY, MIN_STAKE }
+    enum Param { STEPS, BOUNTY, COOLDOWN, METABOLISM, MAX_SATIETY, MIN_STAKE, DATASET }
 
     struct Proposal {
         address proposer;
         Param param;
         uint256 value;
+        bytes32 valueHash;   // used by Param.DATASET, which is not a number
         string rationale;
         uint64 deadline;
         uint256 yes;
@@ -240,7 +247,10 @@ contract Tomagachi {
 
     event Hatched(address indexed token, uint256 positionId, string symbol);
     event Fed(address indexed feeder, uint256 amount, uint256 satiety);
-    event EpochOpened(uint256 indexed id, bytes32 seed, bytes32 baseHash, uint32 steps, uint256 bounty);
+    event EpochOpened(
+        uint256 indexed id, bytes32 seed, bytes32 baseHash, bytes32 datasetHash,
+        uint32 steps, uint256 bounty
+    );
     event JobClaimed(uint256 indexed id, address indexed worker, uint256 stake, uint64 deadline);
     event ResultSubmitted(uint256 indexed id, address indexed worker, bytes32 modelHash, uint256 lossMilli, string uri);
     event Challenged(uint256 indexed id, address indexed challenger, bytes32 altHash);
@@ -261,9 +271,10 @@ contract Tomagachi {
         _lock = 1;
     }
 
-    constructor(uint256 _metabolismPerDay, uint256 _maxSatiety) {
+    constructor(uint256 _metabolismPerDay, uint256 _maxSatiety, bytes32 _datasetHash) {
         metabolismPerDay = _metabolismPerDay;
         maxSatiety = _maxSatiety;
+        datasetHash = _datasetHash;
         lastMetabolized = uint64(block.timestamp);
         nom = new NomToken(address(this));
     }
@@ -382,13 +393,14 @@ contract Tomagachi {
         e.openedAt = uint64(block.timestamp);
         e.seed = seed;
         e.baseHash = baseHash;
+        e.datasetHash = datasetHash;
         e.steps = stepsPerEpoch;
         e.bounty = bounty;
         e.state = EpochState.OPEN;
 
         escrowed += bounty;
         lastEpochOpenedAt = uint64(block.timestamp);
-        emit EpochOpened(id, seed, baseHash, e.steps, bounty);
+        emit EpochOpened(id, seed, baseHash, datasetHash, e.steps, bounty);
     }
 
     /// @notice Take the job. Your stake is slashed if you vanish or cheat.
@@ -537,9 +549,27 @@ contract Tomagachi {
         external
         returns (uint256 id)
     {
+        return proposeWithHash(param, value, bytes32(0), rationale);
+    }
+
+    /// @notice Propose a new training corpus. The creature only ever trains on
+    /// data its holders voted for.
+    function proposeDataset(bytes32 newDataset, string calldata rationale)
+        external
+        returns (uint256 id)
+    {
+        require(newDataset != bytes32(0), "empty dataset");
+        return proposeWithHash(Param.DATASET, 0, newDataset, rationale);
+    }
+
+    function proposeWithHash(Param param, uint256 value, bytes32 valueHash, string calldata rationale)
+        public
+        returns (uint256 id)
+    {
         require(nom.balanceOf(msg.sender) >= PROPOSAL_THRESHOLD, "need 50 NOM");
         proposals.push(
-            Proposal(msg.sender, param, value, rationale, uint64(block.timestamp) + VOTING_PERIOD, 0, 0, false)
+            Proposal(msg.sender, param, value, valueHash, rationale,
+                     uint64(block.timestamp) + VOTING_PERIOD, 0, 0, false)
         );
         id = proposals.length - 1;
         emit Proposed(id, msg.sender, param, value, rationale);
@@ -583,6 +613,9 @@ contract Tomagachi {
             maxSatiety = p.value;
         } else if (p.param == Param.MIN_STAKE) {
             minStakeWei = p.value;
+        } else if (p.param == Param.DATASET) {
+            require(p.valueHash != bytes32(0), "empty dataset");
+            datasetHash = p.valueHash;
         }
         emit ProposalExecuted(id, p.param, p.value);
     }
@@ -670,10 +703,18 @@ contract Tomagachi {
     function jobSpec(uint256 id)
         external
         view
-        returns (bytes32 seed, bytes32 baseHash, uint32 steps, uint256 bounty, EpochState state, uint64 deadline)
+        returns (
+            bytes32 seed,
+            bytes32 baseHash,
+            bytes32 dataset,
+            uint32 steps,
+            uint256 bounty,
+            EpochState state,
+            uint64 deadline
+        )
     {
         Epoch storage e = epochs[id];
-        return (e.seed, e.baseHash, e.steps, e.bounty, e.state, e.deadline);
+        return (e.seed, e.baseHash, e.datasetHash, e.steps, e.bounty, e.state, e.deadline);
     }
 
     /// @notice The creature's hoard of its own token (fees arrive partly in

@@ -18,7 +18,7 @@ import numpy as np
 import torch
 
 from .data import _align, build_features, fetch_raw
-from .dataset import CONTEXT, HORIZON, Windows
+from .dataset import CONTEXT, HORIZON, VOL_SCALES
 from .model import D_MODEL, SuwaExecutionModel, t_scale_to_std
 
 CACHE = Path("data/live_cache.json")
@@ -34,7 +34,12 @@ def _load_cache() -> dict | None:
         return None
     if time.time() - blob.get("fetched_at", 0) > CACHE_TTL:
         return None
-    return blob["raw"]
+    # JSON object keys are always strings, so the unix-hour keys come back as
+    # text and every downstream arithmetic on them fails. Restore the ints.
+    return {
+        sym: {int(hour): tuple(row) for hour, row in candles.items()}
+        for sym, candles in blob["raw"].items()
+    }
 
 
 def _save_cache(raw: dict) -> None:
@@ -54,9 +59,9 @@ def live_features(days: int = 14, throttle: float = 3.0, use_cache: bool = True)
         _save_cache(raw)
     # Enough history for the longest look-back (168h z-score) plus the
     # context window, and nothing more — live fetches should stay cheap.
-    price, vol, mcap, symbols = _align(raw, min_hours=CONTEXT + 168 + 24)
-    feats = build_features(price, vol, mcap)
-    return feats, price, symbols
+    low, high, op, close, volume, symbols = _align(raw, min_hours=CONTEXT + 168 + 24)
+    feats = build_features(low, high, op, close, volume)
+    return feats, close, high, low, symbols
 
 
 def _verdict(ratio: float) -> str:
@@ -74,13 +79,14 @@ class Forecaster:
         self.symbols: list[str] = list(ckpt["symbols"])
         self.horizon: int = int(ckpt.get("horizon", HORIZON))
         self.model = SuwaExecutionModel(
-            ckpt["n_assets"], ckpt["n_features"], ckpt.get("d_model", D_MODEL)
+            ckpt["n_assets"], ckpt["n_features"], ckpt.get("d_model", D_MODEL),
+            n_scales=ckpt.get("n_scales", 8),
         )
         self.model.load_state_dict(ckpt["model"])
         self.model.eval()
         torch.set_num_threads(1)
 
-    def forecast(self, feats: np.ndarray, price: np.ndarray, symbols: list[str]) -> dict:
+    def forecast(self, feats, price, high, low, symbols: list[str]) -> dict:
         """Forecast from an aligned feature history.
 
         The live symbol order must be mapped onto the order the model was
@@ -97,22 +103,27 @@ class Forecaster:
             raise RuntimeError(f"need {CONTEXT}h of history, got {window.shape[0]}")
         x = torch.from_numpy(window.transpose(1, 0, 2)[None].astype(np.float32))
 
-        # Multi-scale anchors, computed exactly as in training. These must
-        # match dataset.Windows.vol_scales or the head is fed nonsense.
+        # Multi-scale anchors, computed exactly as in training: close-to-close
+        # AND range-based at every look-back. These must match
+        # dataset.Windows.vol_scales or the head is fed nonsense.
         px = price[:, cols]
+        hi, lo = high[:, cols], low[:, cols]
         logret = np.zeros_like(px)
         logret[1:] = np.log(np.maximum(px[1:], 1e-12) / np.maximum(px[:-1], 1e-12))
+        pk_hourly = np.log(np.maximum(hi, 1e-12) / np.maximum(lo, 1e-12)) / (
+            2.0 * np.sqrt(np.log(2.0))
+        )
 
-        scales = np.stack(
-            [logret[-win:].std(axis=0) for win in Windows.VOL_SCALES], axis=-1
-        )  # [A, S]
-        scale_std = scales * math.sqrt(self.horizon)
+        rms = lambda x, w: np.sqrt(np.maximum((x[-w:] ** 2).mean(axis=0), 0.0))
+        cc = [rms(logret, w) for w in VOL_SCALES]
+        pk = [rms(pk_hourly, w) for w in VOL_SCALES]
+        scale_std = np.stack(cc + pk, axis=-1) * math.sqrt(self.horizon)
         log_scales = np.log(
             np.maximum(scale_std / t_scale_to_std(), 1e-4)
-        )[None].astype(np.float32)  # [1, A, S]
+        )[None].astype(np.float32)  # [1, A, 2S]
 
         # The naive 24h benchmark, kept for the risk ratio the caller reads.
-        base_std = logret[-24:].std(axis=0) * math.sqrt(self.horizon)
+        base_std = rms(logret, 24) * math.sqrt(self.horizon)
 
         with torch.no_grad():
             mu, log_scale = self.model(x, torch.from_numpy(log_scales))
@@ -141,5 +152,5 @@ class Forecaster:
         }
 
     def forecast_live(self, **kw) -> dict:
-        feats, price, symbols = live_features(**kw)
-        return self.forecast(feats, price, symbols)
+        feats, price, high, low, symbols = live_features(**kw)
+        return self.forecast(feats, price, high, low, symbols)

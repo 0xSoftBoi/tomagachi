@@ -44,6 +44,8 @@ export interface JobSpec {
   id: bigint;
   seed: `0x${string}`;
   baseHash: `0x${string}`;
+  /** The corpus the chain requires this epoch to be trained on. */
+  datasetHash: `0x${string}`;
   steps: number;
   bounty: bigint;
   state: EpochStateName;
@@ -132,16 +134,17 @@ export class Creature {
 
   async jobSpec(id: bigint): Promise<JobSpec> {
     const s = (await this.read("jobSpec", [id])) as [
-      `0x${string}`, `0x${string}`, number, bigint, number, bigint
+      `0x${string}`, `0x${string}`, `0x${string}`, number, bigint, number, bigint
     ];
     return {
       id,
       seed: s[0],
       baseHash: s[1],
-      steps: s[2],
-      bounty: s[3],
-      state: EPOCH_STATES[s[4]],
-      deadline: s[5],
+      datasetHash: s[2],
+      steps: s[3],
+      bounty: s[4],
+      state: EPOCH_STATES[s[5]],
+      deadline: s[6],
     };
   }
 
@@ -161,9 +164,9 @@ export class Creature {
     const e = (await this.read("epochs", [id])) as any[];
     return {
       openedAt: e[0], deadline: e[1], submittedAt: e[2], voteEnd: e[3],
-      seed: e[4], baseHash: e[5], steps: e[6], bounty: e[7],
-      worker: e[8], workerStake: e[9], modelHash: e[10], uri: e[11],
-      lossMilli: e[12], challenger: e[13],
+      seed: e[4], baseHash: e[5], datasetHash: e[6], steps: e[7], bounty: e[8],
+      worker: e[9], workerStake: e[10], modelHash: e[11], uri: e[12],
+      lossMilli: e[13], challenger: e[14],
     };
   }
 }

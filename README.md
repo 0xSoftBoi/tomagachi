@@ -36,6 +36,7 @@ that can live on-chain does:
 | its court | NOM-weighted votes settle challenges |
 | its voice | `says()` computes what it feels like saying, on-chain |
 | its rules | passed proposals rewrite its parameters directly |
+| its data | the corpus hash is pinned on-chain; the trainer refuses anything else |
 
 The only off-chain part is the GPU work itself — and that is deliberately
 *replaceable muscle*: the job spec is public, anyone may claim it, and the
@@ -51,8 +52,9 @@ creature's treasury. There is no owner variable.
   the next training run. Both permissionless; feeding pays NOM for the gas.
 - **Keep it alive** — satiety decays daily. Starve it and it **hibernates**:
   `openEpoch()` reverts until someone feeds it. Neglect has consequences.
-- **Train it** — stake ETH on an open epoch, run the seeded job, publish the
-  weights, submit the hash, collect the bounty and 100 NOM.
+- **Train it** — stake ETH on an open epoch, run the job against the seed *and
+  dataset hash* the contract names, publish the weights, submit the hash,
+  collect the bounty and 100 NOM.
 - **Police it** — re-run any epoch. If your hash differs, `challenge()` with a
   bond. NOM holders vote; the loser's stake goes to the winner.
 - **Steer it** — hold 50 NOM to `propose()`; passed votes rewrite the creature's
@@ -60,34 +62,34 @@ creature's treasury. There is no owner variable.
 
 ## What it actually does — SUWA-WM
 
-The creature trains an **execution risk model for on-chain trading**, and that
-is a real product, not a mascot.
+The creature trains an **execution risk model for on-chain trading**. That is a
+real product, not a mascot.
 
-Given the live state of every asset Suwappu routes, it forecasts the
-distribution of each one's next 6 hours — and specifically how volatile they
-will be. An execution router reads that to set slippage tolerance and decide
-whether to route now or wait. It is not an LLM; it never sees text.
+Given the live state of the 43 assets Suwappu routes, it forecasts each one's
+next-6h return distribution — specifically how volatile it will be. A router
+reads that to set slippage and decide whether to route now or wait. It is not
+an LLM; it never sees text.
 
-Trained on **1,941 hours x 19 assets** of real hourly market data, pretrained
-JEPA-style (predict the *representation* of the future, not prices) then
-fine-tuned into a calibrated Student-t forecaster.
+Trained on **17,520 hours x 43 assets** of real hourly OHLCV (753,360
+asset-hours, two years). Evaluated **walk-forward**: 4 expanding-window folds x
+2 seeds, 2,492 test windows each, spanning several market regimes — with every
+fold trained only on data preceding its own test block.
 
-| | test NLL | calibration | 
-|---|---|---|
-| **SUWA-WM** | **-2.4950** | **1.33** |
-| naive (trailing 24h vol) | -2.4792 | 3.29 |
-| HAR (fitted benchmark) | -2.3599 | — |
-| no-pretraining ablation | -2.4330 | 1.34 |
+| | NLL (nats) | QLIKE | calibration |
+|---|---|---|---|
+| **SUWA-WM** | **−2.5510 ± 0.0946** | **0.5745 ± 0.0279** | **1.004 ± 0.041** |
+| naive close-to-close | −2.5216 ± 0.1015 | 0.6526 ± 0.0581 | 1.209 ± 0.059 |
+| naive Parkinson | −2.5328 ± 0.0995 | 0.6260 ± 0.0450 | 1.175 ± 0.040 |
+| HAR (fitted) | −2.4945 ± 0.0937 | 0.6838 ± 0.0330 | — |
 
-The headline is calibration, not NLL. `calibration` is the RMS of
-`(actual - mu) / predicted_sigma`, where 1.0 is perfect. **The naive forecast
-understates risk by 3.3x; SUWA-WM understates it by 1.33x.** Size your slippage
-off the naive number and you are wrong by a factor of three.
+Against the **best** benchmark on each run: NLL **+0.018 ± 0.007** and QLIKE
+**+0.052 ± 0.021**, better in **8 of 8 runs**. Calibration lands at **1.004**,
+where 1.0 is perfect — predicted risk matches realised risk, while the naive
+forecasts understate it by ~18%.
 
-It has **no directional edge** and does not claim one — 55.8% directional
-accuracy on 278 test windows is inside the noise. Read `expected_drift` as
-zero. Full numbers, limits, and the reproducibility contract:
-[`model/README.md`](model/README.md).
+It has **no directional edge** and does not claim one: 0.504 ± 0.008
+directional accuracy. Read `expected_drift` as zero. Full numbers, what did
+*not* work, and the limits: [`model/README.md`](model/README.md).
 
 Verify any release against the chain:
 
@@ -119,7 +121,7 @@ risk on ETH right now?"*
 | [`agent/`](agent/) | unprivileged keeper + worker anyone can run |
 | [`model/`](model/) | SUWA-WM: data pipeline, pretraining, fine-tuning, verifier |
 | [`tools/`](tools/) | MCP server — the model as skills any agent can call |
-| [`data/`](data/) | the pinned training corpus every worker must reproduce |
+| [`data/`](data/) | the pinned corpus — hashed on-chain, every worker must match it |
 | [`web/`](web/) | live vitals page, reads Base directly |
 
 ## Go live
@@ -147,10 +149,11 @@ the creature from then on.
 ## Verified against real Base state
 
 The contract was exercised on a Base mainnet fork against the **live PumpClaw
-factory and LP locker** — 38 checks covering hatching (the creature really is
+factory and LP locker** — 40 checks covering hatching (the creature really is
 registered as its own fee creator), feeding, metabolism and hibernation, the
-full honest-worker path, a challenged-and-slashed worker, worker timeout, binding
-governance, and treasury solvency. The keeper/worker daemon then drove a real
+full honest-worker path, a challenged-and-slashed worker, worker timeout,
+binding governance including voting in a new training corpus, the on-chain
+dataset pin, and treasury solvency. The keeper/worker daemon then drove a real
 epoch from `openEpoch()` to a finalized on-chain release.
 
 ## Economics, plainly
@@ -165,9 +168,9 @@ epoch from `openEpoch()` to a finalized on-chain release.
 
 ## Roadmap
 
-- [ ] Add `datasetHash` to the contract's `Epoch` so data is pinned on-chain, not just in the manifest
-- [ ] Longer history and more assets — 90 days is the free-tier ceiling and the sample is small
 - [ ] Chain-native features: Base gas, mempool depth, bridge latency (execution risk is not only price risk)
+- [ ] Per-asset calibration — the aggregate is good, thin assets may not be
+- [ ] More than two years and more than one asset class
 - [ ] Per-route slippage labels from Suwappu's own fills, to supervise the thing directly
 - [ ] Fetch base weights from IPFS/Arweave as well as Hugging Face
 - [ ] Pin a reproducible trainer image so bit-equality is guaranteed, not pinned by convention

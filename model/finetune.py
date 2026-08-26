@@ -1,15 +1,19 @@
 """Fine-tune the pretrained world model into an execution risk forecaster.
 
-This is the part that does something useful. Given the current market state,
-the heads predict the distribution of each asset's next-H-hour log return:
-mu (drift) and sigma (risk). An execution engine reads sigma to decide how
-much slippage to tolerate and whether to route now or wait.
+Given the current market state the heads predict the distribution of each
+asset's next-H-hour log return: mu (drift) and a Student-t scale (risk). An
+execution engine reads the scale to size slippage and decide whether to route
+now or wait.
 
-Scored against the honest benchmark — "the next few hours look like the last
-24" — using Gaussian NLL, a proper scoring rule. If the model cannot beat that
-it is worthless, and this script will say so.
+Scored against three benchmarks, all under the SAME distribution family so the
+only thing under test is the forecast:
 
-    python3 finetune.py --backbone ../runs/pretrain/backbone.pt --steps 2000
+    naive-cc   trailing 24h close-to-close volatility
+    naive-pk   trailing 24h Parkinson (range) volatility — the harder bar
+    HAR        fitted on the training split, the standard volatility model
+
+If the model cannot beat the best of those it is not earning its keep, and this
+script says so plainly.
 """
 
 from __future__ import annotations
@@ -26,56 +30,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 import torch
 
-from suwa_wm.data import load
-from suwa_wm.dataset import CONTEXT, HORIZON, Windows, batches
+from suwa_wm.data import load, load_hl
+from suwa_wm.dataset import CONTEXT, HORIZON, VOL_SCALES, Windows, batches
 from suwa_wm.model import (
-    D_MODEL, STUDENT_T_DOF, SuwaExecutionModel, student_t_nll, t_scale_to_std
+    D_MODEL, STUDENT_T_DOF, SuwaExecutionModel, student_t_nll, t_scale_to_std,
 )
 from suwa_wm.repro import pin_determinism, seed_from_hex
 
-LOG_2PI = math.log(2 * math.pi)
-# Floor the naive forecast: a trailing window can print a near-zero vol, and an
-# unfloored sigma turns one tail event into thousands of nats. Both the model's
-# anchor and the benchmark use the same floor, so the comparison stays fair.
+# Floor the scale: a trailing window can print a near-zero vol, and an
+# unfloored sigma turns one tail event into thousands of nats. Model and every
+# benchmark share this floor, so the comparison stays fair.
 SIGMA_FLOOR = 1e-4
-
-
-def anchor(w: Windows, idx: np.ndarray) -> np.ndarray:
-    """Naive H-hour forecast as a Student-t *scale*: trailing 24h realised
-    vol, scaled by sqrt(H), then converted from a std into a t scale."""
-    std = w.baseline_vol(idx) * math.sqrt(HORIZON)
-    return np.maximum(std / t_scale_to_std(), SIGMA_FLOOR)
-
-
-def log_scales(w: Windows, idx: np.ndarray) -> np.ndarray:
-    """[B, A, S] log t-scales at every look-back — the model's anchor inputs."""
-    std = w.vol_scales(idx) * math.sqrt(HORIZON)
-    return np.log(np.maximum(std / t_scale_to_std(), SIGMA_FLOOR)).astype(np.float32)
-
-
-def fit_har(w: Windows, idx: np.ndarray):
-    """Fit a HAR-style volatility model on the TRAINING split only.
-
-    This is the strong benchmark. HAR (heterogeneous autoregressive realised
-    volatility) is the standard hard-to-beat baseline in volatility
-    forecasting: log forward vol regressed on log trailing vol at several
-    horizons. If the neural world model cannot beat this, it is not earning
-    its keep, and saying so is the point of measuring it.
-    """
-    X = log_scales(w, idx).reshape(-1, len(Windows.VOL_SCALES))
-    _, realized = w.labels(idx, HORIZON)
-    y = np.log(np.maximum(realized * math.sqrt(HORIZON) / t_scale_to_std(), SIGMA_FLOOR)).ravel()
-    A = np.concatenate([X, np.ones((X.shape[0], 1), dtype=np.float32)], axis=1)
-    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
-    return coef
-
-
-def har_scale(w: Windows, idx: np.ndarray, coef: np.ndarray) -> np.ndarray:
-    X = log_scales(w, idx)
-    B, Aa, S = X.shape
-    flat = np.concatenate([X.reshape(-1, S), np.ones((B * Aa, 1), dtype=np.float32)], axis=1)
-    return np.maximum(np.exp(flat @ coef).reshape(B, Aa), SIGMA_FLOOR)
-
+N_SCALES = len(VOL_SCALES) * 2
 
 _T_CONST = (
     math.lgamma((STUDENT_T_DOF + 1) / 2)
@@ -84,102 +50,121 @@ _T_CONST = (
 )
 
 
-def nll_pointwise(mu: np.ndarray, scale: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Student-t NLL. The baseline is scored under the SAME family and dof, so
-    the comparison isolates the forecast, not the distributional assumption."""
+def _to_scale(std: np.ndarray) -> np.ndarray:
+    """A standard deviation is not a Student-t scale; convert and floor."""
+    return np.maximum(std / t_scale_to_std(), SIGMA_FLOOR)
+
+
+def log_scales(w: Windows, idx: np.ndarray) -> np.ndarray:
+    """[B, A, 2S] log anchors — the model's volatility inputs."""
+    return np.log(_to_scale(w.vol_scales(idx) * math.sqrt(HORIZON))).astype(np.float32)
+
+
+def nll_pointwise(mu, scale, y) -> np.ndarray:
     scale = np.maximum(scale, SIGMA_FLOOR)
     z = (y - mu) / scale
     return -_T_CONST + np.log(scale) + 0.5 * (STUDENT_T_DOF + 1) * np.log1p(z**2 / STUDENT_T_DOF)
 
 
-def nll_of(mu: np.ndarray, scale: np.ndarray, y: np.ndarray) -> float:
-    """Mean Student-t NLL in nats. Tails still matter here, which is why the
-    report also carries the median and a per-sample win rate."""
-    return float(nll_pointwise(mu, scale, y).mean())
+def qlike(scale: np.ndarray, realized_var: np.ndarray) -> float:
+    """QLIKE loss — the standard robust score for volatility forecasts.
+    Unlike squared error it is insensitive to the noise in the realised proxy."""
+    var = np.maximum(scale * t_scale_to_std(), SIGMA_FLOOR) ** 2
+    r = np.maximum(realized_var, 1e-12) / var
+    return float(np.mean(r - np.log(r) - 1.0))
+
+
+def fit_har(w: Windows, idx: np.ndarray) -> np.ndarray:
+    """HAR: log forward vol regressed on log trailing vol at several horizons.
+    Fitted on the training split only."""
+    X = log_scales(w, idx).reshape(-1, N_SCALES)
+    _, realized = w.labels(idx, HORIZON)
+    y = np.log(_to_scale(realized * math.sqrt(HORIZON))).ravel()
+    A = np.concatenate([X, np.ones((X.shape[0], 1), dtype=np.float32)], axis=1)
+    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+    return coef
+
+
+def har_scale(w: Windows, idx: np.ndarray, coef: np.ndarray) -> np.ndarray:
+    X = log_scales(w, idx)
+    B, A, S = X.shape
+    flat = np.concatenate([X.reshape(-1, S), np.ones((B * A, 1), dtype=np.float32)], axis=1)
+    return np.maximum(np.exp(flat @ coef).reshape(B, A), SIGMA_FLOOR)
 
 
 @torch.no_grad()
 def collect(model, w: Windows, idx: np.ndarray, batch: int):
     model.eval()
-    mus, sigmas = [], []
+    mus, scales = [], []
     for b in batches(idx, batch, np.random.default_rng(0), shuffle=False):
-        mu, log_sigma = model(
+        mu, log_s = model(
             torch.from_numpy(w.context_batch(b)), torch.from_numpy(log_scales(w, b))
         )
         mus.append(mu.numpy())
-        sigmas.append(np.exp(log_sigma.numpy()))
+        scales.append(np.exp(log_s.numpy()))
     model.train()
-    return np.concatenate(mus), np.concatenate(sigmas)
+    return np.concatenate(mus), np.concatenate(scales)
 
 
-def report(name: str, model, w: Windows, idx: np.ndarray, batch: int, har=None) -> dict:
-    mu, sigma = collect(model, w, idx, batch)
-    y, _ = w.labels(idx, HORIZON)
-
-    # Baseline: trailing realised vol scaled to the horizon, zero drift. This
-    # is what a sensible engineer ships without a model.
-    base_sigma = anchor(w, idx)
+def report(name: str, model, w: Windows, idx: np.ndarray, batch: int,
+           har=None, quiet: bool = False) -> dict:
+    mu, scale = collect(model, w, idx, batch)
+    y, realized = w.labels(idx, HORIZON)
     zeros = np.zeros_like(y)
-    base_nll = nll_of(zeros, base_sigma, y)
-    model_nll = nll_of(mu, sigma, y)
+    realized_var = (realized * math.sqrt(HORIZON)) ** 2
 
-    # Tail-robust companions to the mean: a mean NLL gap can be one bad hour.
-    pm = nll_pointwise(mu, sigma, y)
-    pb = nll_pointwise(zeros, base_sigma, y)
-    median_gap = float(np.median(pb) - np.median(pm))
-    win_rate = float((pm < pb).mean())
-
-    har_nll = har_corr = har_win = float("nan")
-    if har is not None:
-        hs = har_scale(w, idx, har)
-        ph = nll_pointwise(zeros, hs, y)
-        har_nll = float(ph.mean())
-        har_win = float((pm < ph).mean())
-        har_corr = float(np.corrcoef(hs.ravel(), np.abs(y).ravel())[0, 1])
-
-    # Does predicted risk track realised move size?
-    realized = np.abs(y)
-    corr = float(np.corrcoef(sigma.ravel(), realized.ravel())[0, 1])
-    base_corr = float(np.corrcoef(base_sigma.ravel(), realized.ravel())[0, 1])
-
-    # Drift skill, measured honestly against "always predict zero".
-    ss_res = float(((y - mu) ** 2).sum())
-    ss_tot = float((y**2).sum())
-    r2 = 1.0 - ss_res / max(ss_tot, 1e-12)
-    direction = float(((mu > 0) == (y > 0)).mean())
-
-    # Calibration: with well-fit sigma, this ratio sits near 1.0.
-    implied_std = np.maximum(sigma, SIGMA_FLOOR) * t_scale_to_std()
-    calib = float(np.sqrt((((y - mu) / implied_std) ** 2).mean()))
-    # The same number for the benchmark: if it is also far from 1.0 the test
-    # window simply moved more than any trailing estimate could have known.
-    base_std = base_sigma * t_scale_to_std()
-    base_calib = float(np.sqrt(((y / base_std) ** 2).mean()))
-
-    m = {
-        "nll": model_nll, "baseline_nll": base_nll, "nll_improvement": base_nll - model_nll,
-        "median_nll_improvement": median_gap, "win_rate": win_rate,
-        "har_nll": har_nll, "har_win_rate": har_win, "har_sigma_corr": har_corr,
-        "beats_har": bool(model_nll < har_nll) if har is not None else None,
-        "sigma_corr": corr, "baseline_sigma_corr": base_corr,
-        "return_r2": r2, "direction_acc": direction, "calibration_z_rms": calib,
-        "baseline_calibration_z_rms": base_calib,
+    bench = {
+        "naive_cc": _to_scale(w.baseline_vol(idx) * math.sqrt(HORIZON)),
+        "naive_pk": _to_scale(w.parkinson_vol(idx) * math.sqrt(HORIZON)),
     }
-    print(
-        f"  {name}\n"
-        f"    NLL   model {model_nll:8.4f} | naive {base_nll:8.4f} "
-        f"({base_nll - model_nll:+.4f}) | HAR {har_nll:8.4f} ({har_nll - model_nll:+.4f})\n"
-        f"    wins  {win_rate:.1%} vs naive | {har_win:.1%} vs HAR | median gap {median_gap:+.4f}\n"
-        f"    risk  corr {corr:.3f} | naive {base_corr:.3f} | HAR {har_corr:.3f}\n"
-        f"    calib {calib:.2f} vs naive {base_calib:.2f} | dir {direction:.3f} | R2 {r2:+.4f}"
-    )
+    if har is not None:
+        bench["har"] = har_scale(w, idx, har)
+
+    pm = nll_pointwise(mu, scale, y)
+    m = {
+        "nll": float(pm.mean()),
+        "qlike": qlike(scale, realized_var),
+        "sigma_corr": float(np.corrcoef(scale.ravel(), np.abs(y).ravel())[0, 1]),
+        "calibration_z_rms": float(
+            np.sqrt((((y - mu) / (np.maximum(scale, SIGMA_FLOOR) * t_scale_to_std())) ** 2).mean())
+        ),
+        "direction_acc": float(((mu > 0) == (y > 0)).mean()),
+        "return_r2": float(1.0 - ((y - mu) ** 2).sum() / max((y**2).sum(), 1e-12)),
+    }
+    for key, s in bench.items():
+        pb = nll_pointwise(zeros, s, y)
+        m[f"{key}_nll"] = float(pb.mean())
+        m[f"{key}_qlike"] = qlike(s, realized_var)
+        m[f"{key}_win_rate"] = float((pm < pb).mean())
+        m[f"{key}_sigma_corr"] = float(np.corrcoef(s.ravel(), np.abs(y).ravel())[0, 1])
+        m[f"{key}_calibration"] = float(
+            np.sqrt(((y / (s * t_scale_to_std())) ** 2).mean())
+        )
+    best = min(bench, key=lambda k: m[f"{k}_nll"])
+    m["best_benchmark"] = best
+    m["nll_vs_best"] = m[f"{best}_nll"] - m["nll"]
+    m["qlike_vs_best"] = m[f"{best}_qlike"] - m["qlike"]
+
+    if not quiet:
+        print(f"  {name}")
+        print(f"    NLL    model {m['nll']:8.4f} | " + " | ".join(
+            f"{k} {m[k + '_nll']:8.4f}" for k in bench))
+        print(f"    QLIKE  model {m['qlike']:8.4f} | " + " | ".join(
+            f"{k} {m[k + '_qlike']:8.4f}" for k in bench))
+        print(f"    corr   model {m['sigma_corr']:.3f} | " + " | ".join(
+            f"{k} {m[k + '_sigma_corr']:.3f}" for k in bench))
+        print(f"    calib  model {m['calibration_z_rms']:.2f} | " + " | ".join(
+            f"{k} {m[k + '_calibration']:.2f}" for k in bench))
+        print(f"    vs best ({best}): NLL {m['nll_vs_best']:+.4f} "
+              f"QLIKE {m['qlike_vs_best']:+.4f} | dir {m['direction_acc']:.3f}")
     return m
 
 
-def train_model(w, tr, va, steps, batch, lr, seed, backbone_path=None, freeze=False):
+def train_model(w, tr, va, steps, batch, lr, seed, backbone_path=None,
+                freeze=False, quiet=False):
     """Returns (model, best_val_nll). backbone_path=None => no pretraining."""
     torch.manual_seed(seed)
-    model = SuwaExecutionModel(w.A, w.F, D_MODEL)
+    model = SuwaExecutionModel(w.A, w.F, D_MODEL, n_scales=N_SCALES)
     if backbone_path:
         ckpt = torch.load(backbone_path, map_location="cpu", weights_only=False)
         model.backbone.load_state_dict(ckpt["backbone"])
@@ -203,10 +188,10 @@ def train_model(w, tr, va, steps, batch, lr, seed, backbone_path=None, freeze=Fa
             b = next(gen)
 
         y, _ = w.labels(b, HORIZON)
-        mu, log_sigma = model(
+        mu, log_s = model(
             torch.from_numpy(w.context_batch(b)), torch.from_numpy(log_scales(w, b))
         )
-        loss = student_t_nll(mu, log_sigma, torch.from_numpy(y))
+        loss = student_t_nll(mu, log_s, torch.from_numpy(y))
 
         opt.zero_grad()
         loss.backward()
@@ -214,46 +199,52 @@ def train_model(w, tr, va, steps, batch, lr, seed, backbone_path=None, freeze=Fa
         opt.step()
         sched.step()
 
-        if step % 200 == 0 or step == steps:
-            mu_v, sig_v = collect(model, w, va, batch)
+        if step % 250 == 0 or step == steps:
+            mu_v, s_v = collect(model, w, va, batch)
             y_v, _ = w.labels(va, HORIZON)
-            val = nll_of(mu_v, sig_v, y_v)
+            val = float(nll_pointwise(mu_v, s_v, y_v).mean())
             flag = ""
             if val < best:
                 best, best_state = val, deepcopy(model.state_dict())
                 flag = " *"
-            print(f"    step {step:5d} train {loss.item():7.4f} val {val:7.4f}{flag}")
+            if not quiet:
+                print(f"    step {step:5d} train {loss.item():7.4f} val {val:7.4f}{flag}")
 
     if best_state:
         model.load_state_dict(best_state)
     return model, best
 
 
+def build_windows(data_path: str):
+    feats, price, symbols = load(data_path)
+    try:
+        high, low = load_hl(data_path)
+    except KeyError:
+        high = low = None       # older corpus without OHLC
+    return Windows(feats, price, CONTEXT, high, low), symbols
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", type=str, default="../data/market.npz")
     ap.add_argument("--backbone", type=str, default="../runs/pretrain/backbone.pt")
-    ap.add_argument("--steps", type=int, default=2000)
+    ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--seed-hex", type=str, default=None)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--out", type=str, default="../runs/finetune")
-    ap.add_argument("--ablation", action="store_true", help="also train without pretraining")
+    ap.add_argument("--ablation", action="store_true")
     args = ap.parse_args()
 
     seed = seed_from_hex(args.seed_hex) if args.seed_hex else args.seed
     pin_determinism(seed)
 
-    feats, price, symbols = load(args.data)
-    w = Windows(feats, price, CONTEXT)
+    w, symbols = build_windows(args.data)
     tr, va, te = w.splits(lookahead=HORIZON)
     print(f"train={len(tr)} val={len(va)} test={len(te)} | horizon={HORIZON}h assets={w.A}")
 
     har = fit_har(w, tr)
-    print(f"HAR benchmark fitted on train: weights {np.round(har[:-1], 3)} "
-          f"intercept {har[-1]:.3f}")
-
     print("\nfine-tuning from pretrained world model")
     model, _ = train_model(w, tr, va, args.steps, args.batch, args.lr, seed, args.backbone)
     print("\ntest set:")
@@ -269,13 +260,13 @@ def main() -> None:
         results["scratch"] = report("scratch", scratch, w, te, args.batch, har)
         gain = results["scratch"]["nll"] - metrics["nll"]
         results["pretraining_gain_nll"] = gain
-        print(f"\npretraining changed test NLL by {gain:+.4f} nats "
-              f"({'pretraining helped' if gain > 0 else 'pretraining did not help'})")
+        print(f"\npretraining changed test NLL by {gain:+.4f} nats")
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     torch.save({"model": model.state_dict(), "n_assets": w.A, "n_features": w.F,
-                "d_model": D_MODEL, "symbols": symbols, "horizon": HORIZON}, out / "execution.pt")
+                "d_model": D_MODEL, "n_scales": N_SCALES, "symbols": symbols,
+                "horizon": HORIZON}, out / "execution.pt")
     (out / "metrics.json").write_text(json.dumps(results, indent=2))
     print(f"\nwrote {out}/execution.pt and metrics.json")
 

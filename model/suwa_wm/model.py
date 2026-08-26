@@ -137,7 +137,7 @@ class ExecutionHeads(nn.Module):
     level with the benchmark instead of below it.
     """
 
-    def __init__(self, d_model: int = D_MODEL, n_scales: int = 4, max_log_adjust: float = 1.5):
+    def __init__(self, d_model: int = D_MODEL, n_scales: int = 8, max_log_adjust: float = 1.5):
         super().__init__()
         self.max_log_adjust = max_log_adjust
         self.n_scales = n_scales
@@ -167,7 +167,7 @@ class SuwaExecutionModel(nn.Module):
     """Pretrained world model + execution heads. This is what ships."""
 
     def __init__(self, n_assets: int, n_features: int, d_model: int = D_MODEL,
-                 depth: int = 2, n_scales: int = 4):
+                 depth: int = 2, n_scales: int = 8):
         super().__init__()
         self.backbone = SuwaWM(n_assets, n_features, d_model, depth)
         self.heads = ExecutionHeads(d_model, n_scales)

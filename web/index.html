@@ -131,7 +131,8 @@ const ABI = [
   {name:"releases",type:"function",stateMutability:"view",inputs:[{type:"uint256"}],outputs:[
     {type:"uint64"},{type:"uint64"},{type:"bytes32"},{type:"string"},{type:"uint256"},{type:"address"}]},
   {name:"jobSpec",type:"function",stateMutability:"view",inputs:[{type:"uint256"}],outputs:[
-    {type:"bytes32"},{type:"bytes32"},{type:"uint32"},{type:"uint256"},{type:"uint8"},{type:"uint64"}]},
+    {type:"bytes32"},{type:"bytes32"},{type:"bytes32"},{type:"uint32"},{type:"uint256"},
+    {type:"uint8"},{type:"uint64"}]},
 ];
 
 const MOODS=["EGG","HAPPY","PECKISH","STARVING","HIBERNATING"];
@@ -188,13 +189,14 @@ if(!c0?.tomagachi){
       const pill=$("jobpill");
       if(eps>0n){
         const id=eps-1n;
-        const [seed,baseHash,steps,bounty,state]=await client.readContract({...C,functionName:"jobSpec",args:[id]});
+        const [seed,baseHash,dataset,steps,bounty,state]=await client.readContract({...C,functionName:"jobSpec",args:[id]});
         const st=Number(state);
         pill.textContent=live?"live":"idle"; pill.className="pill "+(live?"live":"idle");
         $("job").innerHTML=`epoch <b>${id}</b> — ${STATES[st]}<br/>
           bounty <b>${formatEther(bounty)} ETH</b> · ${steps} steps<br/>
           seed <span class="hash">${seed}</span><br/>
-          warm-starts from <span class="hash">${baseHash==="0x"+"0".repeat(64)?"scratch":baseHash}</span>`;
+          warm-starts from <span class="hash">${baseHash==="0x"+"0".repeat(64)?"scratch":baseHash}</span><br/>
+          dataset <span class="hash">${dataset}</span>`;
       }
 
       // releases, newest first

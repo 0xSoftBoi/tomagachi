@@ -180,6 +180,11 @@ export class Worker {
       "--seed-hex", job.seed,
       "--out", dir,
     ];
+    // The chain names the corpus. The trainer refuses to run on anything else,
+    // so a worker cannot accidentally produce an unreproducible result.
+    if (job.datasetHash && job.datasetHash !== ZERO_HASH) {
+      args.push("--data-sha256", job.datasetHash);
+    }
     // Warm-start from the model the chain says is current.
     const base = await this.creature.latestRelease();
     if (base && base.hash === job.baseHash) {

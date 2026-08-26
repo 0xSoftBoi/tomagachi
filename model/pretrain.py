@@ -67,7 +67,8 @@ def effective_rank(model, w: Windows, idx: np.ndarray) -> float:
     return float((ev.sum() ** 2) / (ev**2).sum().clamp(min=1e-12))
 
 
-def run_pretrain(w: Windows, steps: int, batch: int, lr: float, seed: int, out_path) -> str:
+def run_pretrain(w: Windows, steps: int, batch: int, lr: float, seed: int,
+                 out_path, train_idx=None) -> str:
     """Reusable JEPA pretraining, for the on-chain genesis epoch.
 
     Same procedure as the CLI, minus the reporting. Returns the path of the
@@ -85,7 +86,10 @@ def run_pretrain(w: Windows, steps: int, batch: int, lr: float, seed: int, out_p
     opt = torch.optim.AdamW(params, lr=lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=lr, total_steps=steps)
 
-    tr, _, _ = w.splits(lookahead=TARGET)
+    # Walk-forward folds MUST pass their own training indices: pretraining on
+    # the full series would put the fold's test period into the backbone and
+    # quietly invalidate the whole evaluation.
+    tr = w.splits(lookahead=TARGET)[0] if train_idx is None else train_idx
     rng = np.random.default_rng(seed)
     gen = batches(tr, batch, rng)
 
@@ -133,8 +137,9 @@ def main() -> None:
     seed = seed_from_hex(args.seed_hex) if args.seed_hex else args.seed
     pin_determinism(seed)
 
-    feats, price, symbols = load(args.data)
-    w = Windows(feats, price, CONTEXT)
+    from finetune import build_windows
+
+    w, symbols = build_windows(args.data)
     tr, va, te = w.splits(lookahead=TARGET)
     print(f"assets={w.A} features={w.F} hours={w.T}")
     print(f"train={len(tr)} val={len(va)} test={len(te)} (chronological)")

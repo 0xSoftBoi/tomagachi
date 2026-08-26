@@ -22,7 +22,8 @@
 import { createWalletClient, createPublicClient, http, parseEther, formatEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
-import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -43,6 +44,17 @@ const client = createPublicClient({ chain, transport });
 const metabolism = parseEther(process.env.METABOLISM_ETH ?? "0.01");
 const maxSatiety = parseEther(process.env.MAX_SATIETY_ETH ?? "1");
 
+// The corpus every worker must train on, pinned on-chain from birth. Defaults
+// to hashing the committed dataset; NOM holders can vote in a new one later.
+const datasetPath = process.env.DATASET ?? join(here, "..", "..", "data", "market.npz");
+let datasetHash = process.env.DATASET_SHA256 as `0x${string}` | undefined;
+if (!datasetHash) {
+  if (!existsSync(datasetPath)) {
+    throw new Error(`no dataset at ${datasetPath}; set DATASET or DATASET_SHA256`);
+  }
+  datasetHash = `0x${createHash("sha256").update(readFileSync(datasetPath)).digest("hex")}`;
+}
+
 const name = process.env.NAME ?? "Suwappu Tomagachi";
 const symbol = process.env.SYMBOL ?? "SUWA";
 const supply = BigInt(process.env.SUPPLY ?? "1000000000") * 10n ** 18n;
@@ -54,11 +66,12 @@ console.log(`deploying the creature to ${chain.name}`);
 console.log(`  deployer     : ${account.address} (gains no authority)`);
 console.log(`  metabolism   : ${formatEther(metabolism)} ETH/day`);
 console.log(`  full belly   : ${formatEther(maxSatiety)} ETH`);
+console.log(`  dataset      : ${datasetHash}`);
 
 const deployHash = await wallet.deployContract({
   abi: artifact.abi,
   bytecode: artifact.bytecode,
-  args: [metabolism, maxSatiety],
+  args: [metabolism, maxSatiety, datasetHash],
 });
 const receipt = await client.waitForTransactionReceipt({ hash: deployHash });
 const tomagachi = receipt.contractAddress!;
@@ -98,6 +111,7 @@ const out = {
   tomagachi,
   nom,
   token,
+  datasetHash,
   deployedAt: new Date().toISOString(),
   deployTx: deployHash,
 };
