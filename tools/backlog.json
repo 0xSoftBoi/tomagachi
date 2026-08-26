@@ -47,7 +47,7 @@
       "why": "data.py has a `collected` path with no producer, so every adapter trains on the seed corpus. Traffic is the only source of real in-character data we will ever have, and it is being thrown away.",
       "needs": [],
       "verify": "opt-in capture writes JSONL per character with prompts redacted per policy; off by default; documented retention; no capture without CAPTURE_TRANSCRIPTS=1",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "data-review",

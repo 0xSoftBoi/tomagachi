@@ -31,6 +31,7 @@ import { RateLimiter } from "./ratelimit.js";
 import { UpstreamHealth, httpProbe } from "./health.js";
 import { BreakerOpenError, CircuitBreaker, withRetry } from "./resilience.js";
 import { Lifecycle } from "./lifecycle.js";
+import { capture, callerRefused } from "./capture.js";
 
 interface ChatMessage {
   role: string;
@@ -239,16 +240,25 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string
     );
   };
 
+  const noCapture = callerRefused(req.headers);
+
   if (!body.stream) {
     const out = (await upstream.json()) as any;
     const usage = out.usage ?? {};
-    const completionChars = (out.choices ?? [])
+    const completion = (out.choices ?? [])
       .map((c: any) => c.message?.content ?? "")
-      .join("").length;
+      .join("");
     finish(
       usage.prompt_tokens ?? estimateTokens(promptChars),
-      usage.completion_tokens ?? estimateTokens(completionChars)
+      usage.completion_tokens ?? estimateTokens(completion.length)
     );
+    capture({
+      character: character.id,
+      app: appName(req),
+      messages: body.messages,
+      completion,
+      refused: noCapture,
+    });
     // Re-label the model as the SKU the caller asked for, not the adapter name.
     return json(res, 200, { ...out, model: character.id });
   }
@@ -259,8 +269,10 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string
     connection: "keep-alive",
   });
 
-  // Forward bytes untouched; count the same bytes on the way past.
-  const sse = new SseTally();
+  // Forward bytes untouched; count the same bytes on the way past. The reply
+  // is only assembled when something is actually going to use it.
+  const collecting = config.captureTranscripts && !noCapture;
+  const sse = new SseTally(collecting ? config.captureMaxCharsPerMessage : 0);
   const reader = upstream.body!.getReader();
   const decoder = new TextDecoder();
   try {
@@ -280,6 +292,13 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string
       sse.tally.promptTokens || estimateTokens(promptChars),
       sse.tally.completionTokens || estimateTokens(sse.tally.completionChars)
     );
+    capture({
+      character: character.id,
+      app: appName(req),
+      messages: body.messages,
+      completion: sse.tally.text,
+      refused: noCapture,
+    });
   }
 }
 

@@ -16,6 +16,8 @@ export interface StreamTally {
   /** Characters seen in deltas — the fallback when there is no usage frame. */
   completionChars: number;
   sawDone: boolean;
+  /** The assembled reply, only when asked for: capture needs text, billing does not. */
+  text: string;
 }
 
 export class SseTally {
@@ -25,7 +27,16 @@ export class SseTally {
     completionTokens: 0,
     completionChars: 0,
     sawDone: false,
+    text: "",
   };
+
+  /**
+   * @param collectTextLimit assemble the reply up to this many characters.
+   *   Zero keeps only counts, which is all billing needs — holding a full
+   *   transcript in memory for every request when nobody asked for it is how
+   *   an inference server starts leaking.
+   */
+  constructor(private readonly collectTextLimit = 0) {}
 
   /** Feed a decoded chunk. Safe to call with partial frames. */
   push(chunk: string): void {
@@ -54,7 +65,11 @@ export class SseTally {
         this.tally.completionTokens = frame.usage.completion_tokens ?? this.tally.completionTokens;
       }
       for (const choice of frame.choices ?? []) {
-        this.tally.completionChars += (choice.delta?.content ?? "").length;
+        const delta: string = choice.delta?.content ?? "";
+        this.tally.completionChars += delta.length;
+        if (this.collectTextLimit > 0 && this.tally.text.length < this.collectTextLimit) {
+          this.tally.text += delta;
+        }
       }
     }
   }

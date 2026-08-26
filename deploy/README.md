@@ -137,8 +137,11 @@ That boolean is the gate, and `weeksOfRunway` is what is left if it does not.
 - **400 and 404 are free; 500 is not.** User errors are excluded from the
   uptime score, server errors are not. Preflight checks the shop returns the
   right one.
-- **Never declare `zdr: true` while `memory.ts` is persisting session facts.**
-  It would be a false compliance claim. `COMPLIANCE_ZDR` stays off by default.
+- **Never declare `zdr: true` while `memory.ts` is persisting session facts** —
+  or while `CAPTURE_TRANSCRIPTS=1` is writing traffic to disk. Both would make
+  the claim false. `COMPLIANCE_ZDR` stays off by default, and capture is opt-in
+  for the same reason: redaction removes the identifiers that show up in
+  practice, it does not promise a transcript contains nothing identifying.
 - **Point the load balancer at `/ready`, not `/healthz`.** Liveness answering
   200 over a dead GPU is how every routed request becomes a 5xx. `/healthz` is
   for the process supervisor; `/ready` is for anything deciding where traffic goes.

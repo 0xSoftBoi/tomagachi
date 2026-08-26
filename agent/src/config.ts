@@ -163,6 +163,16 @@ export const config = {
   complianceZdr: process.env.COMPLIANCE_ZDR === "1",
 
   /** Ledger and session store. Overridable so tests and containers can isolate it. */
+  // --- capture: traffic becomes training data (src/capture.ts) ----------
+  // Off unless explicitly enabled. Captures land in their own gitignored
+  // directory and are promoted into the curated set by a separate review step.
+
+  captureTranscripts: process.env.CAPTURE_TRANSCRIPTS === "1",
+  captureDir: process.env.CAPTURE_DIR ?? join(repoRoot, "model", "data", "captured"),
+  captureMaxCharsPerMessage: Number(process.env.CAPTURE_MAX_CHARS ?? 4_000),
+  /** Per-character ceiling, so one busy day cannot fill the disk. */
+  captureMaxBytesPerCharacter: Number(process.env.CAPTURE_MAX_BYTES ?? 50_000_000),
+
   stateDir: process.env.STATE_DIR ?? join(agentDir, "state"),
   runsDir: join(repoRoot, "runs"),
   modelDir: join(repoRoot, "model"),

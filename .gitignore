@@ -3,6 +3,7 @@ dist/
 artifacts/
 runs/
 state/
+model/data/captured/   # raw traffic: never committed
 .env
 .env.local
 __pycache__/

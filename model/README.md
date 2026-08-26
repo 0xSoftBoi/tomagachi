@@ -60,6 +60,10 @@ In order of preference, recorded in the manifest as `data_source`:
 
 1. **collected** — `model/data/<character>.jsonl`, one `{"messages": [...]}` per
    line. Real sessions and community preference labels; what a NOM vote decides.
+   The shop produces these when `CAPTURE_TRANSCRIPTS=1`, writing raw traffic to
+   the gitignored `model/data/captured/` with identifiers redacted; a review
+   step promotes what is worth keeping into the curated file above. Callers can
+   refuse per request with `X-Suwa-No-Capture: 1`, and capture is off by default.
 2. **distilled** — generated against any OpenAI-compatible teacher with
    `--teacher-url`. How a new SKU bootstraps before it has traffic.
 3. **seed** — a deterministic template corpus built from the character's own
