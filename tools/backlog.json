@@ -13,7 +13,7 @@
       "why": "The manifest promises a requests-per-minute ceiling and nothing enforces it. Past the limit we would queue, and queueing shows up as bad throughput on the public model page. Returning 429 early is tracked apart from uptime.",
       "needs": [],
       "verify": "a burst past the declared limit returns 429 with retry-after; under the limit is unaffected; tests cover the window edge",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "readiness-probe",
@@ -27,7 +27,9 @@
       "id": "upstream-retry",
       "title": "One retry and a circuit breaker on the upstream",
       "why": "A single dropped connection currently becomes a 502, and 5xx is the error class that costs routing priority. One retry on a transient failure is nearly free; a breaker stops us hammering a GPU that is genuinely down.",
-      "needs": ["readiness-probe"],
+      "needs": [
+        "readiness-probe"
+      ],
       "verify": "a single transient failure is retried and succeeds; repeated failures open the breaker and return 503 fast rather than hanging",
       "status": "todo"
     },
@@ -51,7 +53,9 @@
       "id": "data-review",
       "title": "Promote captured transcripts into a training set",
       "why": "Raw traffic is not a dataset. Something has to filter, dedupe and gate quality before it reaches model/data/<character>.jsonl, or the fleet trains on its own worst output.",
-      "needs": ["capture-transcripts"],
+      "needs": [
+        "capture-transcripts"
+      ],
       "verify": "a CLI reviews captures, applies quality filters, and writes model/data/<id>.jsonl; running the trainer then reports data_source=collected",
       "status": "todo"
     },
@@ -67,7 +71,9 @@
       "id": "eval-gate-release",
       "title": "Refuse to ship an epoch that got worse",
       "why": "Warm-starting compounds, which means it also compounds regressions. An epoch that scores below its parent should not be checkpointed on-chain or served.",
-      "needs": ["eval-multi-turn"],
+      "needs": [
+        "eval-multi-turn"
+      ],
       "verify": "a regressed epoch exits non-zero and writes no manifest; the previous adapter stays live; the threshold is configurable",
       "status": "todo"
     },
@@ -75,7 +81,9 @@
       "id": "hot-reload-on-epoch",
       "title": "Serve a new epoch the moment it is trained",
       "why": "reload-adapter.sh exists but nothing calls it, so a freshly trained epoch sits on disk until someone notices. The compounding story only pays off if what we trained is what we serve.",
-      "needs": ["eval-gate-release"],
+      "needs": [
+        "eval-gate-release"
+      ],
       "verify": "after a successful epoch the brain exports, reloads the adapter into the upstream, and logs it; a failed reload does not fail the epoch",
       "status": "todo"
     },
@@ -91,7 +99,9 @@
       "id": "metrics-history",
       "title": "Daily rollups so trends are visible",
       "why": "A 7-day total cannot answer the only question that matters at the gate: is this growing. Ten weeks of flat is a different decision from ten weeks of climbing.",
-      "needs": ["margin-per-request"],
+      "needs": [
+        "margin-per-request"
+      ],
       "verify": "/metrics returns a daily series; the vitals page sparklines revenue and utilization; rollups survive a restart",
       "status": "todo"
     },
@@ -99,7 +109,10 @@
       "id": "x402-route",
       "title": "Pay-per-call endpoint that settles on-chain",
       "why": "The listing route pays by invoice to an entity, which breaks the loop the whole design is about. x402 is the only path where revenue returns to the contract.",
-      "needs": ["capacity-enforce", "margin-per-request"],
+      "needs": [
+        "capacity-enforce",
+        "margin-per-request"
+      ],
       "verify": "a 402 challenge, payment verification, and a completion served against it; unpaid requests are refused; settlement is recorded in the ledger",
       "status": "todo"
     },
@@ -107,7 +120,9 @@
       "id": "governance-rotation",
       "title": "Let NOM votes pick what trains next",
       "why": "Governance is currently decorative: holders vote and the rotation ignores them. The community labour the plan counts on is not free if their votes do nothing.",
-      "needs": ["hot-reload-on-epoch"],
+      "needs": [
+        "hot-reload-on-epoch"
+      ],
       "verify": "the brain reads open proposals and orders the rotation by vote weight; falls back to round-robin when there are none",
       "status": "todo"
     },
@@ -115,15 +130,19 @@
       "id": "security-review-serve",
       "title": "Adversarial pass over the serving path",
       "why": "The shop takes untrusted input, persists some of it, and injects it back into later prompts. That is three ways to be wrong and none of them have been examined.",
-      "needs": ["capture-transcripts"],
+      "needs": [
+        "capture-transcripts"
+      ],
       "verify": "run the security review over agent/src, fix what it finds, and write down what was accepted and why",
       "status": "todo"
     },
     {
       "id": "ledger-pii",
       "title": "Decide and document what we retain",
-      "why": "We tell a router zdr:false because session facts persist. What exactly persists, for how long, and who can read it has never been written down — and it gates ever claiming zdr:true.",
-      "needs": ["security-review-serve"],
+      "why": "We tell a router zdr:false because session facts persist. What exactly persists, for how long, and who can read it has never been written down \u2014 and it gates ever claiming zdr:true.",
+      "needs": [
+        "security-review-serve"
+      ],
       "verify": "the ledger provably holds no prompt content; retention and deletion documented; a switch that makes zdr:true honest",
       "status": "todo"
     }

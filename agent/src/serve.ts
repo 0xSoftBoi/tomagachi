@@ -27,6 +27,7 @@ import { metrics, record } from "./usage.js";
 import { recall, remember } from "./memory.js";
 import { providerManifest } from "./provider-manifest.js";
 import { SseTally } from "./stream.js";
+import { RateLimiter } from "./ratelimit.js";
 
 interface ChatMessage {
   role: string;
@@ -40,6 +41,9 @@ interface ChatRequest {
   user?: string;
   [k: string]: unknown;
 }
+
+/** The declared ceiling, enforced. Shared, because the GPU is. */
+const limiter = new RateLimiter(config.capacityRequestsPerMinute);
 
 const json = (res: ServerResponse, code: number, body: unknown) => {
   const payload = JSON.stringify(body);
@@ -139,6 +143,17 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string
   if (!character) {
     const known = catalog().characters.map((c) => c.id).join(", ");
     return fail(res, 404, `unknown model ${body.model} — this endpoint serves: ${known}`, "model_not_found");
+  }
+
+  const retryAfter = limiter.take();
+  if (retryAfter !== null) {
+    res.setHeader("retry-after", String(retryAfter));
+    return fail(
+      res,
+      429,
+      `over the declared ceiling of ${limiter.limit} requests/minute — retry in ${retryAfter}s`,
+      "rate_limit_error"
+    );
   }
 
   const session = sessionId(req, body);
@@ -273,7 +288,12 @@ export function startServer(): void {
       }
     }
     if (path === "/healthz") return json(res, 200, { ok: true });
-    if (path === "/metrics") return json(res, 200, metrics());
+    if (path === "/metrics") {
+      return json(res, 200, {
+        ...metrics(),
+        capacity: { limitPerMinute: limiter.limit, inWindow: limiter.inWindow },
+      });
+    }
     // Schema 2.4. This is what a router reads; /v1/models is for everyone else.
     if (path === "/provider/models" && req.method === "GET") {
       return json(res, 200, providerManifest());
