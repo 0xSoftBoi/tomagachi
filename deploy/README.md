@@ -110,12 +110,19 @@ The creature trains an epoch every tick. Restarting vLLM per epoch would mean
 permanent partial downtime, and under 95% uptime costs routing priority — so
 hot-swap instead:
 
+The brain does this itself after every released epoch: it exports the adapter
+and asks vLLM to swap it in place, so what was trained is what gets served
+without a restart. `PUBLISH_ADAPTERS=0` turns that off; the manual path is
+still there for a reload out of band:
+
 ```bash
 ./deploy/vllm/reload-adapter.sh suwa-tide
 ```
 
 Requires `VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`, which `serve.sh` and the
-compose file both set.
+compose file both set. A failed swap never fails the epoch — by then the
+weights exist, the eval passed the gate, and the hash is on-chain — so it is
+logged and the previous adapter keeps serving.
 
 ## What this costs, and when it stops costing
 

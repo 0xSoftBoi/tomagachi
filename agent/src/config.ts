@@ -163,6 +163,11 @@ export const config = {
   complianceZdr: process.env.COMPLIANCE_ZDR === "1",
 
   /** Ledger and session store. Overridable so tests and containers can isolate it. */
+  /** Where exported PEFT adapters land for vLLM to load. */
+  servingDir: process.env.SERVING_DIR ?? join(repoRoot, "serving"),
+  /** Export and hot-swap each released epoch into the running GPU. */
+  publishAdapters: process.env.PUBLISH_ADAPTERS !== "0",
+
   // --- capture: traffic becomes training data (src/capture.ts) ----------
   // Off unless explicitly enabled. Captures land in their own gitignored
   // directory and are promoted into the curated set by a separate review step.

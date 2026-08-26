@@ -20,6 +20,7 @@ import { config } from "./config.js";
 import { loadState, saveState } from "./state.js";
 import { Creature } from "./chain.js";
 import { EpochRejectedError, makeProvider } from "./compute.js";
+import { publishEpoch } from "./adapters.js";
 import { catalog as characterCatalog } from "./characters.js";
 import { metrics } from "./usage.js";
 import * as suwappu from "./suwappu.js";
@@ -224,6 +225,22 @@ export class Brain {
     state.epoch = epoch;
     state.activeJob = undefined;
     saveState(state);
+
+    // 4. Serve what we just trained. The compounding only pays off if the GPU
+    // is running the epoch we paid for, and swapping in place avoids the
+    // downtime a restart per epoch would cost.
+    if (character) {
+      const published = await publishEpoch(outDir, character);
+      if (published.reloaded) {
+        console.log(`[serve] ${character} epoch ${epoch} swapped in at ${published.path}`);
+      } else if (published.error !== "publishing disabled") {
+        // Not fatal: the weights exist, the eval passed, the hash is on-chain.
+        console.warn(
+          `[serve] ${character} epoch ${epoch} trained but not swapped in ` +
+            `(${published.error}) — the previous epoch keeps serving`
+        );
+      }
+    }
 
     const words = character
       ? `${character} epoch ${epoch}: score ${(result.manifest.score ?? 0).toFixed(3)}. ` +

@@ -85,7 +85,7 @@
         "eval-gate-release"
       ],
       "verify": "after a successful epoch the brain exports, reloads the adapter into the upstream, and logs it; a failed reload does not fail the epoch",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "margin-per-request",
