@@ -118,6 +118,33 @@ export const config = {
   prefillTokensPerSec: Number(process.env.PREFILL_TOKENS_PER_SEC ?? 20_000),
   decodeTokensPerSec: Number(process.env.DECODE_TOKENS_PER_SEC ?? 2_000),
 
+  // --- provider manifest (src/provider-manifest.ts) ---------------------
+  // What a router reads to decide what we sell. Defaults are deliberately
+  // conservative: nothing goes live until providerIsReady is flipped.
+
+  providerSlug: process.env.PROVIDER_SLUG ?? "suwappu",
+  providerName: process.env.PROVIDER_NAME ?? "Suwappu",
+  /** false keeps every model staged and invisible while onboarding is tested. */
+  providerIsReady: process.env.PROVIDER_IS_READY === "1",
+  /** Precision actually served. Must match how vLLM is launched. */
+  servedQuantization: process.env.SERVED_QUANTIZATION ?? "bf16",
+  /** Unix seconds; stable across restarts, so set it once at first listing. */
+  modelsCreatedAt: Number(process.env.MODELS_CREATED_AT ?? 1787000000),
+  serveMaxOutputTokens: Number(process.env.SERVE_MAX_OUTPUT_TOKENS ?? 4096),
+  /** Declared request ceiling. Past it we return 429, which is tracked apart from uptime. */
+  capacityRequestsPerMinute: Number(process.env.CAPACITY_REQUESTS_PER_MINUTE ?? 600),
+  /** Where the GPU physically is. ISO 3166-1 alpha-2 plus a provider-scoped region. */
+  datacenters: (process.env.DATACENTERS ?? "US:us-east-1").split(",").map((entry) => {
+    const [country_code, region] = entry.split(":");
+    return region ? { country_code, region } : { country_code };
+  }),
+  deploymentRegion: process.env.DEPLOYMENT_REGION ?? "US",
+  /**
+   * Zero data retention. Keep false while memory.ts persists session facts —
+   * claiming zdr with a session store on disk would be a false statement.
+   */
+  complianceZdr: process.env.COMPLIANCE_ZDR === "1",
+
   stateDir: join(agentDir, "state"),
   runsDir: join(repoRoot, "runs"),
   modelDir: join(repoRoot, "model"),

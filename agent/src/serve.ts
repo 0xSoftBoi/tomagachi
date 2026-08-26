@@ -25,6 +25,7 @@ import { config } from "./config.js";
 import { catalog, findCharacter, type Character } from "./characters.js";
 import { metrics, record } from "./usage.js";
 import { recall, remember } from "./memory.js";
+import { providerManifest } from "./provider-manifest.js";
 
 interface ChatMessage {
   role: string;
@@ -110,7 +111,12 @@ async function upstreamChat(payload: unknown, stream: boolean): Promise<Response
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    throw new Error(`upstream ${res.status}: ${(await res.text()).slice(0, 400)}`);
+    const detail = (await res.text()).slice(0, 400);
+    const err = new Error(`upstream ${res.status}: ${detail}`) as Error & { status?: number };
+    // Saturation is not downtime. Passing 429 through keeps it out of the
+    // uptime score, and returning it early beats queueing behind a full GPU.
+    if (res.status === 429 || res.status === 503) err.status = 429;
+    throw err;
   }
   if (stream && !res.body) throw new Error("upstream returned no stream body");
   return res;
@@ -155,6 +161,10 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string
     upstream = await upstreamChat(payload, Boolean(body.stream));
   } catch (e: any) {
     console.error(`[serve] ${character.id}: ${e.message}`);
+    if (e.status === 429) {
+      res.setHeader("retry-after", "1");
+      return fail(res, 429, "the fleet is at capacity — retry shortly", "rate_limit_error");
+    }
     return fail(res, 502, `inference backend unavailable: ${e.message}`, "upstream_error");
   }
 
@@ -278,6 +288,10 @@ export function startServer(): void {
 
     if (path === "/healthz") return json(res, 200, { ok: true });
     if (path === "/metrics") return json(res, 200, metrics());
+    // Schema 2.4. This is what a router reads; /v1/models is for everyone else.
+    if (path === "/provider/models" && req.method === "GET") {
+      return json(res, 200, providerManifest());
+    }
     if (!authorized(req)) return fail(res, 401, "missing or invalid bearer token", "authentication_error");
     if (path === "/v1/models" && req.method === "GET") return handleModels(res);
 

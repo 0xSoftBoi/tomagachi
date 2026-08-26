@@ -49,6 +49,7 @@ def main() -> None:
     ap.add_argument("--tiny", action="store_true", help="local byte-level backbone, no downloads")
     ap.add_argument("--examples", type=int, default=256)
     ap.add_argument("--rank", type=int, default=8)
+    ap.add_argument("--alpha", type=float, default=16.0)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--teacher-url", type=str, default=os.environ.get("TEACHER_URL"))
@@ -67,7 +68,7 @@ def main() -> None:
     generator = torch.Generator().manual_seed(seed)
 
     backbone = load_base(args.base or cat.base, tiny=args.tiny, device=device)
-    trainable = apply_lora(backbone.model, r=args.rank)
+    trainable = apply_lora(backbone.model, r=args.rank, alpha=args.alpha)
     backbone.model.to(device)
     total = sum(p.numel() for p in backbone.model.parameters())
     print(
@@ -147,6 +148,7 @@ def main() -> None:
             "character": character.id,
             "base": backbone.name,
             "rank": args.rank,
+            "alpha": args.alpha,
             "epoch": args.epoch,
         },
         adapter_path,

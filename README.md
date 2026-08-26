@@ -68,7 +68,8 @@ matters, with the market data behind it, is in
 | [`agent/src/serve.ts`](agent/src/serve.ts) | the shop: OpenAI-compatible endpoint, pricing, usage ledger |
 | [`model/`](model/) | SUWA-LM character adapters, SUWA-WM world model |
 | [`web/`](web/) | live vitals page (static, reads Base directly) |
-| [`research/`](research/) | market scans: where inference revenue actually lands |
+| [`deploy/`](deploy/) | vLLM config, preflight tests, the listing checklist |
+| [`research/`](research/) | market scans, unit economics, the operating plan |
 
 ## Go live
 
