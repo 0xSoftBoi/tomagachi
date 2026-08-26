@@ -28,6 +28,7 @@ import { recall, remember } from "./memory.js";
 import { providerManifest } from "./provider-manifest.js";
 import { SseTally } from "./stream.js";
 import { RateLimiter } from "./ratelimit.js";
+import { UpstreamHealth, httpProbe } from "./health.js";
 
 interface ChatMessage {
   role: string;
@@ -44,6 +45,12 @@ interface ChatRequest {
 
 /** The declared ceiling, enforced. Shared, because the GPU is. */
 const limiter = new RateLimiter(config.capacityRequestsPerMinute);
+
+/** Whether the GPU behind us is answering. Cached; orchestrators poll hard. */
+const health = new UpstreamHealth(
+  httpProbe(config.upstreamBaseUrl, config.upstreamApiKey, config.readinessTimeoutMs),
+  config.readinessCacheMs
+);
 
 const json = (res: ServerResponse, code: number, body: unknown) => {
   const payload = JSON.stringify(body);
@@ -280,14 +287,28 @@ export function startServer(): void {
 
     // The vitals page reads these from another origin. Only the two read-only
     // status routes are shared; nothing that bills is.
-    if (path === "/healthz" || path === "/metrics") {
+    if (path === "/healthz" || path === "/metrics" || path === "/ready") {
       res.setHeader("access-control-allow-origin", config.statusCorsOrigin);
       if (req.method === "OPTIONS") {
         res.writeHead(204, { "access-control-allow-headers": "content-type" });
         return res.end();
       }
     }
+    // Liveness: this process is running. Deliberately answers without asking
+    // anyone else, so a GPU outage never gets us restart-looped.
     if (path === "/healthz") return json(res, 200, { ok: true });
+
+    // Readiness: we can actually serve. 503 here keeps a router from sending
+    // requests that would come back 5xx and count against uptime.
+    if (path === "/ready") {
+      return health.status().then((r) =>
+        json(res, r.ready ? 200 : 503, {
+          ready: r.ready,
+          detail: r.detail,
+          checkedAt: new Date(r.checkedAt).toISOString(),
+        })
+      );
+    }
     if (path === "/metrics") {
       return json(res, 200, {
         ...metrics(),

@@ -66,7 +66,8 @@ UPSTREAM_BASE_URL=http://localhost:8000/v1 npm run serve
 | `GET /v1/models` | the OpenAI-shaped list for everyone else |
 | `POST /v1/chat/completions` | streaming and non-streaming, with real `usage` |
 | `GET /metrics` | realized $/M, GPU utilization, tokens, apps, runway |
-| `GET /healthz` | liveness |
+| `GET /healthz` | liveness — never touches the network |
+| `GET /ready` | readiness — 503 when the GPU behind it is not answering |
 
 ## 5. Prove it before anyone looks
 
@@ -138,4 +139,7 @@ That boolean is the gate, and `weeksOfRunway` is what is left if it does not.
   right one.
 - **Never declare `zdr: true` while `memory.ts` is persisting session facts.**
   It would be a false compliance claim. `COMPLIANCE_ZDR` stays off by default.
+- **Point the load balancer at `/ready`, not `/healthz`.** Liveness answering
+  200 over a dead GPU is how every routed request becomes a 5xx. `/healthz` is
+  for the process supervisor; `/ready` is for anything deciding where traffic goes.
 - **Stream immediately.** TTFT is public. Send tokens as they arrive.

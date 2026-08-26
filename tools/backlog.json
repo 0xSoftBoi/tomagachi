@@ -21,7 +21,7 @@
       "why": "/healthz answers 200 even when the GPU behind it is dead, so a router would keep sending traffic into a hole and every one of those is a 5xx against our uptime.",
       "needs": [],
       "verify": "/ready fails when upstream is unreachable and recovers when it returns; /healthz stays a pure liveness check",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "upstream-retry",

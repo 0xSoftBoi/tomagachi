@@ -94,8 +94,11 @@ export const config = {
   serveApiKey: process.env.SERVE_API_KEY,
   serveContextLength: Number(process.env.SERVE_CONTEXT_LENGTH ?? 32768),
   serveMaxBodyBytes: Number(process.env.SERVE_MAX_BODY_BYTES ?? 2_000_000),
-  /** Origin allowed to read /healthz and /metrics — the vitals page. Billing routes never share. */
+  /** Origin allowed to read /healthz, /ready and /metrics. Billing routes never share. */
   statusCorsOrigin: process.env.STATUS_CORS_ORIGIN ?? "*",
+  /** How long a readiness probe result stands before we ask the GPU again. */
+  readinessCacheMs: Number(process.env.READINESS_CACHE_MS ?? 5_000),
+  readinessTimeoutMs: Number(process.env.READINESS_TIMEOUT_MS ?? 3_000),
 
   /** The GPU underneath: any OpenAI-compatible server (vLLM with one LoRA per SKU). */
   upstreamBaseUrl: process.env.UPSTREAM_BASE_URL ?? "http://localhost:8000/v1",
