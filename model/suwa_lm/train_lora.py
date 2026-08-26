@@ -136,8 +136,10 @@ def main() -> None:
     scores = evaluate.run(backbone, character, holdout)
     print(
         f"[eval] score={scores['score']:.3f} "
-        f"(in-character {scores['in_character_rate']:.2f}, breaks {scores['break_rate']:.2f}) "
-        f"held-out loss={scores['held_out_loss']:.4f}"
+        f"= turn {scores['turn_score']:.3f} (in-character {scores['in_character_rate']:.2f}, "
+        f"breaks {scores['break_rate']:.2f}) + session {scores['session_score']:.3f} "
+        f"(memory {scores['memory_adherence']:.0f}, drift {scores['drift']:.2f}) "
+        f"| held-out loss={scores['held_out_loss']:.4f}"
     )
 
     adapter_path = out / "adapter.pt"
@@ -167,8 +169,13 @@ def main() -> None:
         "final_loss": round(float(ema or 0.0), 6),
         "held_out_loss": scores["held_out_loss"],
         "score": scores["score"],
+        "eval_version": scores["eval_version"],
+        "turn_score": scores["turn_score"],
+        "session_score": scores["session_score"],
         "in_character_rate": scores["in_character_rate"],
         "break_rate": scores["break_rate"],
+        "memory_adherence": scores["memory_adherence"],
+        "drift": scores["drift"],
         "sha256": sha256,
         "file": "adapter.pt",
         "license": "Apache-2.0",

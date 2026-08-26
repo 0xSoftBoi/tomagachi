@@ -93,11 +93,29 @@ sha256sum adapter.pt        # must equal the modelHash in the on-chain Checkpoin
 # then re-run the command in manifest.json's `reproduce` field
 ```
 
-`score = in_character_rate * (1 - break_rate)`, measured on held-out prompts with
-greedy decoding — no sampling, no wall-clock, no network — against the anchors
-the character defines for itself in `characters.json`. That makes the on-chain
-checkpoint a **performance claim a buyer can re-derive**, not just a provenance
-receipt.
+```
+turn    = in_character_rate * (1 - break_rate)
+session = memory_adherence * (1 - drift)
+score   = mean(turn, session)
+```
+
+The turn half asks whether one reply sounds like the character, measured on
+held-out prompts. The session half runs a scripted conversation that plants a
+fact early and asks for it back at the end, and compares voice in the first
+half of the session against the second — that is the question the price is
+actually justified by: **is the same person still there later, and do they
+remember what you told them?**
+
+A model can ace the turn score and fail the session score badly. That is the
+familiar roleplay failure — charming for five minutes, a stranger by turn
+thirty — and scoring only single replies hid exactly the thing being sold.
+
+Greedy decoding, fixed prompts, no sampling and no network, so the number is
+reproducible. `eval_version` is stamped into every manifest because scores from
+different scoring shapes are not comparable, and a release gate that compared
+them anyway would either block a good epoch or wave through a bad one. That
+makes the on-chain checkpoint a **performance claim a buyer can re-derive**,
+not just a provenance receipt.
 
 Weights are Apache-2.0 on a **90-day lag** (`license_effective_after_days`).
 Releasing on day one hands the revenue to whichever host picks the weights up

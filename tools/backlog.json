@@ -65,7 +65,7 @@
       "why": "The current score judges a single reply. What the price premium claims is that the same person is still there forty turns later, and nothing measures that.",
       "needs": [],
       "verify": "the eval runs a scripted multi-turn session and scores memory adherence and voice drift; still deterministic and reproducible from the manifest",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "eval-gate-release",
