@@ -7,15 +7,19 @@
  */
 import { Brain } from "./brain.js";
 import { config } from "./config.js";
+import { startServer } from "./serve.js";
 
 const banner = String.raw`
   ／|、     SUWAPPU TOMAGACHI
- (˚ˎ 。7    an on-chain creature that eats stablecoins
-  |、˜〵    and trains an open world model
+ (˚ˎ 。7    an on-chain creature that eats stablecoins,
+  |、˜〵    trains character models, and sells them
   じしˍ,)ノ
 `;
 
 console.log(banner);
+
+// The shop pays for the training. Run it unless something else is serving.
+if (process.env.SERVE !== "0") startServer();
 
 const brain = new Brain();
 

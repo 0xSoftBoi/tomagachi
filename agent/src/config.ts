@@ -54,6 +54,26 @@ export const config = {
   /** Training shape per epoch. */
   stepsPerEpoch: Number(process.env.STEPS_PER_EPOCH ?? 2000),
 
+  /**
+   * What the creature trains with its food.
+   *  - "adapter": a character LoRA from model/characters.json — the product
+   *  - "world":   SUWA-WM, the Reef world model — the dream, and free to keep
+   * See research/operating-plan.md for why the adapters are what get sold.
+   */
+  trainTarget: (process.env.TRAIN_TARGET ?? "adapter") as "adapter" | "world",
+  /** Characters to train, in order, one per epoch. Empty => every SKU in the catalog. */
+  characterRotation: (process.env.CHARACTER_ROTATION ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+  /** Steps per adapter epoch — far fewer than the world model needed. */
+  stepsPerAdapterEpoch: Number(process.env.STEPS_PER_ADAPTER_EPOCH ?? 300),
+  /** Train against the local byte-level backbone: no downloads, no GPU, smoke test only. */
+  tinyBackbone: process.env.TINY_BACKBONE === "1",
+  /** Optional teacher endpoint used to bootstrap a SKU's dataset. */
+  teacherUrl: process.env.TEACHER_URL,
+  teacherModel: process.env.TEACHER_MODEL,
+
   /** Optional: push weights to Hugging Face (open source release). */
   hfRepo: process.env.HF_REPO, // e.g. "suwappu/suwa-wm"
   hfToken: process.env.HF_TOKEN,
@@ -65,6 +85,38 @@ export const config = {
     .filter(Boolean),
   /** Minimum USD value before a donated token is worth swapping. */
   sweepMinUsd: Number(process.env.SWEEP_MIN_USD ?? 1),
+
+  // --- serving: the shop window (src/serve.ts) --------------------------
+
+  servePort: Number(process.env.SERVE_PORT ?? 8080),
+  serveHost: process.env.SERVE_HOST ?? "0.0.0.0",
+  /** Shared secret a router presents. Unset => open, which is fine behind a proxy. */
+  serveApiKey: process.env.SERVE_API_KEY,
+  serveContextLength: Number(process.env.SERVE_CONTEXT_LENGTH ?? 32768),
+  serveMaxBodyBytes: Number(process.env.SERVE_MAX_BODY_BYTES ?? 2_000_000),
+
+  /** The GPU underneath: any OpenAI-compatible server (vLLM with one LoRA per SKU). */
+  upstreamBaseUrl: process.env.UPSTREAM_BASE_URL ?? "http://localhost:8000/v1",
+  upstreamApiKey: process.env.UPSTREAM_API_KEY,
+  /** Force one upstream model name instead of routing by adapter id (single-model hosts). */
+  upstreamModelOverride: process.env.UPSTREAM_MODEL,
+
+  /**
+   * How the character's system prompt meets the caller's.
+   *  - "merge":    caller's card wins, our consistency rules ride behind it (default)
+   *  - "override": always speak as the catalog character
+   *  - "off":      serve the adapter bare
+   */
+  personaMode: (process.env.SUWA_PERSONA ?? "merge") as "merge" | "override" | "off",
+
+  /**
+   * Cost model behind GET /metrics. Defaults match research/unit_economics.py,
+   * so the dashboard and the plan cannot drift apart silently.
+   */
+  gpuUsdPerHour: Number(process.env.GPU_USD_PER_HOUR ?? 2),
+  gpuCount: Number(process.env.GPU_COUNT ?? 1),
+  prefillTokensPerSec: Number(process.env.PREFILL_TOKENS_PER_SEC ?? 20_000),
+  decodeTokensPerSec: Number(process.env.DECODE_TOKENS_PER_SEC ?? 2_000),
 
   stateDir: join(agentDir, "state"),
   runsDir: join(repoRoot, "runs"),

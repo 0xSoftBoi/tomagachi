@@ -18,7 +18,9 @@ import { config } from "./config.js";
 export interface JobSpec {
   epoch: number;
   steps: number;
-  outDir: string; // where checkpoint.pt + manifest.json land
+  outDir: string; // where the artifact + manifest.json land
+  /** Character id when training an adapter; absent for the world model. */
+  character?: string;
 }
 
 export interface JobResult {
@@ -28,6 +30,11 @@ export interface JobResult {
     final_loss: number;
     sha256: string;
     file: string;
+    /** Adapters only: the reproducible quality claim that goes out with the release. */
+    score?: number;
+    held_out_loss?: number;
+    character?: string;
+    base?: string;
   };
   artifactPath: string;
 }
@@ -58,19 +65,38 @@ export class LocalProvider implements ComputeProvider {
 
   async run(spec: JobSpec): Promise<JobResult> {
     mkdirSync(spec.outDir, { recursive: true });
-    const args = [
-      join(config.modelDir, "suwa_wm", "train.py"),
-      "--epoch", String(spec.epoch),
-      "--steps", String(spec.steps),
-      "--out", spec.outDir,
-    ];
+    const args = spec.character
+      ? [
+          join(config.modelDir, "suwa_lm", "train_lora.py"),
+          "--character", spec.character,
+          "--epoch", String(spec.epoch),
+          "--steps", String(spec.steps),
+          "--out", spec.outDir,
+        ]
+      : [
+          join(config.modelDir, "suwa_wm", "train.py"),
+          "--epoch", String(spec.epoch),
+          "--steps", String(spec.steps),
+          "--out", spec.outDir,
+        ];
+    if (spec.character && config.tinyBackbone) args.push("--tiny");
+    if (spec.character && config.teacherUrl) {
+      args.push("--teacher-url", config.teacherUrl);
+      if (config.teacherModel) args.push("--teacher-model", config.teacherModel);
+    }
+    // Releases run on a lag in production (see characters.json): the brain only
+    // pushes when HF_REPO is set, which is how the 90-day window is enforced.
     if (config.hfRepo && config.hfToken) args.push("--push", config.hfRepo);
 
     console.log(`[compute:local] python3 ${args.join(" ")}`);
     await new Promise<void>((resolve, reject) => {
       const p = spawn("python3", args, {
         stdio: "inherit",
-        env: { ...process.env, HF_TOKEN: config.hfToken ?? "" },
+        env: {
+          ...process.env,
+          HF_TOKEN: config.hfToken ?? "",
+          TEACHER_KEY: process.env.TEACHER_KEY ?? "",
+        },
       });
       p.on("exit", (code) =>
         code === 0 ? resolve() : reject(new Error(`trainer exited ${code}`))
@@ -101,10 +127,14 @@ export class RemoteProvider implements ComputeProvider {
       method: "POST",
       headers,
       body: JSON.stringify({
-        image: "tomagachi/suwa-wm-trainer",
-        cmd: ["python3", "train.py", "--epoch", String(spec.epoch), "--steps", String(spec.steps)],
+        image: spec.character ? "tomagachi/suwa-lm-trainer" : "tomagachi/suwa-wm-trainer",
+        cmd: spec.character
+          ? ["python3", "train_lora.py", "--character", spec.character,
+             "--epoch", String(spec.epoch), "--steps", String(spec.steps)]
+          : ["python3", "train.py", "--epoch", String(spec.epoch), "--steps", String(spec.steps)],
         epoch: spec.epoch,
         steps: spec.steps,
+        character: spec.character,
       }),
     });
     if (!submit.ok) throw new Error(`compute submit ${submit.status}: ${await submit.text()}`);
@@ -122,7 +152,8 @@ export class RemoteProvider implements ComputeProvider {
     }
 
     mkdirSync(spec.outDir, { recursive: true });
-    for (const f of ["manifest.json", "checkpoint.pt"]) {
+    const artifact = spec.character ? "adapter.pt" : "checkpoint.pt";
+    for (const f of ["manifest.json", artifact]) {
       const res = await fetch(`${config.computeEndpoint}/jobs/${id}/artifacts/${f}`, { headers });
       if (!res.ok) throw new Error(`artifact ${f}: ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
