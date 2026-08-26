@@ -75,7 +75,7 @@
         "eval-multi-turn"
       ],
       "verify": "a regressed epoch exits non-zero and writes no manifest; the previous adapter stays live; the threshold is configurable",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "hot-reload-on-epoch",

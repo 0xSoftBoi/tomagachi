@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { config } from "./config.js";
 import { loadState, saveState } from "./state.js";
 import { Creature } from "./chain.js";
-import { makeProvider } from "./compute.js";
+import { EpochRejectedError, makeProvider } from "./compute.js";
 import { catalog as characterCatalog } from "./characters.js";
 import { metrics } from "./usage.js";
 import * as suwappu from "./suwappu.js";
@@ -178,7 +178,26 @@ export class Brain {
 
     // 2. Train.
     const steps = character ? config.stepsPerAdapterEpoch : config.stepsPerEpoch;
-    const result = await this.provider.run({ epoch, steps, outDir, character });
+    let result;
+    try {
+      result = await this.provider.run({ epoch, steps, outDir, character });
+    } catch (e) {
+      if (e instanceof EpochRejectedError) {
+        // The gate did its job. Nothing goes on-chain and nothing is served;
+        // the epoch number is not consumed, so the next tick tries again from
+        // the same parent. The compute was still bought and still logged.
+        state.activeJob = undefined;
+        saveState(state);
+        console.log(`[gate] ${jobRef} scored below its parent — not checkpointed, will retrain`);
+        await this.creature
+          .speak(`${character ?? "that epoch"} came out worse. i am not shipping it.`)
+          .catch(() => {});
+        return;
+      }
+      state.activeJob = undefined;
+      saveState(state);
+      throw e;
+    }
 
     // 3. Checkpoint on-chain: hash of the open weights + where to get them.
     const uri = config.hfRepo

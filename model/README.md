@@ -117,6 +117,23 @@ them anyway would either block a good epoch or wave through a bad one. That
 makes the on-chain checkpoint a **performance claim a buyer can re-derive**,
 not just a provenance receipt.
 
+## An epoch that got worse is not released
+
+Warm-starting is what makes community compute compound into one improving
+character. It compounds regressions the same way, so the trainer refuses to
+release an epoch scoring below its parent:
+
+- no `manifest.json`, so the brain has nothing to checkpoint on-chain
+- no `adapter.pt` either — the weights are kept as `rejected-adapter.pt` so the
+  *next* epoch cannot warm-start from a regression and compound it
+- `rejected.json` records the comparison, and the trainer exits 3
+- the previous epoch stays live and the epoch number is not consumed, so the
+  next attempt starts from the same parent
+
+Only like is compared with like: a parent scored under a different
+`eval_version` is not a baseline, and the gate says so rather than guessing.
+`--score-tolerance` widens the margin, `--no-gate` bypasses it entirely.
+
 Weights are Apache-2.0 on a **90-day lag** (`license_effective_after_days`).
 Releasing on day one hands the revenue to whichever host picks the weights up
 first; the lag keeps the promise and keeps the quarter.

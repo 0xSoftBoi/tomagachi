@@ -13,7 +13,9 @@ Outputs in --out:
     python3 suwa_lm/train_lora.py --character suwa-tide --epoch 1 --tiny
 
 Adapters warm-start from the previous epoch, so community compute compounds
-into one improving character rather than a pile of restarts.
+into one improving character rather than a pile of restarts. That cuts both
+ways: a regression compounds too. An epoch that scores below its parent is
+rejected here rather than checkpointed on-chain and served -- see `gate()`.
 """
 
 from __future__ import annotations
@@ -36,6 +38,51 @@ from suwa_lm.lora import adapter_state_dict, apply_lora, load_adapter, load_base
 
 BATCH = 4
 HOLDOUT_FRACTION = 0.15
+REJECTED_EXIT_CODE = 3
+
+
+def gate(score: float, parent: dict | None, eval_version: int, tolerance: float
+         ) -> tuple[bool, str]:
+    """Should this epoch be released? Returns (ok, why).
+
+    Only ever compares like with like. A score produced by a different scoring
+    shape is not a baseline -- comparing across versions would either block a
+    good epoch or wave through a bad one, which is the whole reason manifests
+    carry eval_version.
+    """
+    if parent is None:
+        return True, "no parent epoch to compare against"
+
+    parent_version = parent.get("eval_version", 1)
+    if parent_version != eval_version:
+        return True, (
+            f"parent scored with eval v{parent_version}, this run is v{eval_version} — "
+            "not comparable, so not gated"
+        )
+
+    parent_score = parent.get("score")
+    if parent_score is None:
+        return True, "parent recorded no score"
+
+    if score + tolerance < parent_score:
+        return False, (
+            f"score {score:.4f} is below parent epoch {parent.get('epoch')} "
+            f"at {parent_score:.4f} (tolerance {tolerance:g})"
+        )
+    return True, f"score {score:.4f} holds against parent {parent_score:.4f}"
+
+
+def parent_manifest(out: Path, character_id: str, epoch: int) -> dict | None:
+    """The previous epoch's manifest, if this character has one."""
+    if epoch <= 1:
+        return None
+    path = out.parent / f"{character_id}-epoch-{epoch - 1}" / "manifest.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
 
 
 def main() -> None:
@@ -55,6 +102,14 @@ def main() -> None:
     ap.add_argument("--teacher-url", type=str, default=os.environ.get("TEACHER_URL"))
     ap.add_argument("--teacher-model", type=str, default=os.environ.get("TEACHER_MODEL", ""))
     ap.add_argument("--push", type=str, default=None, help="HF repo id for the open release")
+    ap.add_argument(
+        "--score-tolerance",
+        type=float,
+        default=0.0,
+        help="how far below the parent's score is still acceptable; the eval is "
+             "deterministic, so the default is zero",
+    )
+    ap.add_argument("--no-gate", action="store_true", help="train and write even if worse")
     args = ap.parse_args()
 
     cat = catalog_mod.load()
@@ -142,6 +197,29 @@ def main() -> None:
         f"| held-out loss={scores['held_out_loss']:.4f}"
     )
 
+    parent = parent_manifest(out, character.id, args.epoch)
+    ok, why = gate(scores["score"], parent, scores["eval_version"], args.score_tolerance)
+    if not ok and not args.no_gate:
+        # Deliberately NOT adapter.pt. A rejected epoch left under that name
+        # would be warm-started from by the next epoch, which is precisely how
+        # a regression compounds instead of being contained.
+        rejected_path = out / "rejected-adapter.pt"
+        torch.save({"adapter": adapter_state_dict(backbone.model), "epoch": args.epoch}, rejected_path)
+        (out / "rejected.json").write_text(json.dumps({
+            "character": character.id,
+            "epoch": args.epoch,
+            "reason": why,
+            "score": scores["score"],
+            "parent_score": (parent or {}).get("score"),
+            "eval": scores,
+        }, indent=2))
+        print(f"[gate] REJECTED — {why}")
+        print(f"[gate] no manifest written; epoch {args.epoch - 1} stays live")
+        print(f"[gate] weights kept for inspection at {rejected_path}")
+        raise SystemExit(REJECTED_EXIT_CODE)
+
+    print(f"[gate] {'released' if ok else 'released (gate overridden)'} — {why}")
+
     adapter_path = out / "adapter.pt"
     torch.save(
         {
@@ -180,6 +258,8 @@ def main() -> None:
         "file": "adapter.pt",
         "license": "Apache-2.0",
         "license_effective_after_days": cat.license_delay_days,
+        "gate": why,
+        "parent_score": (parent or {}).get("score"),
         "reproduce": (
             f"python3 suwa_lm/train_lora.py --character {character.id} "
             f"--epoch {args.epoch} --steps {args.steps} --seed {seed}"

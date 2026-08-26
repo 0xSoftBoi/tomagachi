@@ -39,6 +39,20 @@ export interface JobResult {
   artifactPath: string;
 }
 
+/**
+ * The trainer's way of saying "this epoch was worse than its parent". Not a
+ * failure: the run worked, the eval worked, and the answer was no. Treating it
+ * as a crash would bury the one signal the gate exists to produce.
+ */
+export class EpochRejectedError extends Error {
+  constructor(readonly character: string | undefined, readonly epoch: number) {
+    super(`epoch ${epoch} scored below its parent and was not released`);
+  }
+}
+
+/** train_lora.py exits with this when the release gate refuses an epoch. */
+const REJECTED_EXIT_CODE = 3;
+
 export interface ComputeProvider {
   readonly name: string;
   readonly priceUsdc: bigint; // 6dp; 0 => no on-chain purchase needed
@@ -98,9 +112,13 @@ export class LocalProvider implements ComputeProvider {
           TEACHER_KEY: process.env.TEACHER_KEY ?? "",
         },
       });
-      p.on("exit", (code) =>
-        code === 0 ? resolve() : reject(new Error(`trainer exited ${code}`))
-      );
+      p.on("exit", (code) => {
+        if (code === 0) return resolve();
+        if (code === REJECTED_EXIT_CODE) {
+          return reject(new EpochRejectedError(spec.character, spec.epoch));
+        }
+        reject(new Error(`trainer exited ${code}`));
+      });
       p.on("error", reject);
     });
     return readManifest(spec.outDir);
