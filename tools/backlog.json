@@ -114,7 +114,7 @@
         "margin-per-request"
       ],
       "verify": "a 402 challenge, payment verification, and a completion served against it; unpaid requests are refused; settlement is recorded in the ledger",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "governance-rotation",

@@ -66,6 +66,7 @@ UPSTREAM_BASE_URL=http://localhost:8000/v1 npm run serve
 | `GET /v1/models` | the OpenAI-shaped list for everyone else |
 | `POST /v1/chat/completions` | streaming and non-streaming, with real `usage` |
 | `GET /metrics` | realized $/M, GPU utilization, tokens, apps, runway, margin, daily series |
+| `POST /v1/chat/completions` (unpaid, x402 on) | 402 with a quote: amount, asset, network, payTo |
 | `GET /healthz` | liveness — never touches the network |
 | `GET /ready` | readiness — 503 when the GPU behind it is not answering |
 
@@ -93,6 +94,25 @@ gross — and prints the burn underneath. `STATUS_CORS_ORIGIN` controls which
 origin may read `/healthz` and `/metrics`; the billing routes are never shared
 cross-origin. The panel renders whether or not the contract is reachable: the
 shop and the chain are separate systems and should not share a failure mode.
+
+## 5c. The other way to get paid
+
+A router pays by monthly invoice to an entity, which is fine for distribution
+and breaks the loop this project is about: money in a company bank account is
+not money the creature ate. With `X402_ENABLED=1` and a facilitator configured,
+callers without an issued API key get a 402 quoting the call — amount, asset,
+network, and the contract to pay — retry with an `X-PAYMENT` header, and are
+settled for what they actually used rather than what they were quoted.
+
+It fails closed. A facilitator that is unreachable or confused means no
+completion; an endpoint that serves free work whenever its payment check errors
+is a free endpoint with extra steps.
+
+**Untested against a real facilitator.** The protocol layer is verified end to
+end against a stub — challenge, refusal, verification, settlement — but no real
+payment has ever been signed, verified or settled on-chain by this code. Treat
+the first live payment as an experiment, with a small `X402_MIN_CHARGE_USD` and
+somebody watching.
 
 ## 6. Go live, deliberately
 

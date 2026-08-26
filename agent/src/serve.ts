@@ -23,7 +23,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { config } from "./config.js";
 import { catalog, findCharacter, type Character } from "./characters.js";
-import { daily, metrics, record } from "./usage.js";
+import { daily, metrics, priceOf, record } from "./usage.js";
 import { recall, remember } from "./memory.js";
 import { providerManifest } from "./provider-manifest.js";
 import { SseTally } from "./stream.js";
@@ -32,6 +32,7 @@ import { UpstreamHealth, httpProbe } from "./health.js";
 import { BreakerOpenError, CircuitBreaker, withRetry } from "./resilience.js";
 import { Lifecycle } from "./lifecycle.js";
 import { capture, callerRefused } from "./capture.js";
+import * as x402 from "./x402.js";
 
 interface ChatMessage {
   role: string;
@@ -180,6 +181,34 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string
     return fail(res, 404, `unknown model ${body.model} — this endpoint serves: ${known}`, "model_not_found");
   }
 
+  // Either the caller is an authorised router (invoiced) or they pay per call.
+  // x402 only applies when there is no valid key, so the two routes coexist.
+  const paying = config.x402Enabled && Boolean(config.x402FacilitatorUrl) && !hasIssuedKey(req);
+  let payment: string | undefined;
+  let requirements: x402.PaymentRequirements | undefined;
+
+  if (paying) {
+    const promptChars = body.messages.reduce((n, m) => n + (m.content?.length ?? 0), 0);
+    const maxTokens = Number(body.max_tokens) > 0
+      ? Number(body.max_tokens)
+      : config.x402DefaultMaxTokens;
+    requirements = x402.requirements(character, estimateTokens(promptChars), maxTokens);
+
+    const header = req.headers["x-payment"];
+    payment = Array.isArray(header) ? header[0] : header;
+    if (!payment) {
+      return json(res, 402, x402.challenge(requirements));
+    }
+
+    const verdict = await x402.verify(payment, requirements);
+    if (!verdict.ok) {
+      // Fail closed: an unverified payment is an unpaid request.
+      console.warn(`[x402] refused ${character.id}: ${verdict.reason}`);
+      return json(res, 402, { ...x402.challenge(requirements), error: verdict.reason });
+    }
+    console.log(`[x402] verified ${character.id} for ${verdict.payer ?? "unknown payer"}`);
+  }
+
   const retryAfter = limiter.take();
   if (retryAfter !== null) {
     res.setHeader("retry-after", String(retryAfter));
@@ -224,6 +253,21 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string
   }
 
   const finish = (promptTokens: number, completionTokens: number) => {
+    if (paying && payment && requirements) {
+      // Settle for what was used, not what was quoted. The completion is
+      // already out the door, so a failed settlement is a debt to chase.
+      const actual = priceOf(character, promptTokens, completionTokens);
+      void x402.settle(payment, requirements, actual).then((result) => {
+        if (!res.writableEnded) {
+          res.setHeader("x-payment-response", x402.paymentResponseHeader(result));
+        }
+        console.log(
+          result.settled
+            ? `[x402] settled ${result.amount} atomic for ${character.id} (${result.txHash ?? "no tx"})`
+            : `[x402] UNSETTLED ${result.amount} atomic for ${character.id}: ${result.reason}`
+        );
+      });
+    }
     const row = record(
       {
         character: character.id,
@@ -324,10 +368,21 @@ function handleModels(res: ServerResponse): void {
   });
 }
 
-function authorized(req: IncomingMessage): boolean {
-  if (!config.serveApiKey) return true;
+/**
+ * Presented a key we issued. Distinct from `authorized`, which is about
+ * whether to answer at all: with no key configured everyone is authorised,
+ * and treating that as "already paying" would have made the x402 route serve
+ * every caller for free.
+ */
+function hasIssuedKey(req: IncomingMessage): boolean {
+  if (!config.serveApiKey) return false;
   const header = req.headers.authorization ?? "";
   return header === `Bearer ${config.serveApiKey}`;
+}
+
+function authorized(req: IncomingMessage): boolean {
+  if (!config.serveApiKey) return true;
+  return hasIssuedKey(req);
 }
 
 export function startServer(): void {

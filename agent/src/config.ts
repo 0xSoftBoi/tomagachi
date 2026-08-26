@@ -170,6 +170,24 @@ export const config = {
   /** Export and hot-swap each released epoch into the running GPU. */
   publishAdapters: process.env.PUBLISH_ADAPTERS !== "0",
 
+  // --- x402: pay-per-call, so revenue can reach the contract ------------
+  // Off unless enabled AND a facilitator is configured. There is no path here
+  // that serves paid work without a verified payment.
+
+  x402Enabled: process.env.X402_ENABLED === "1",
+  x402FacilitatorUrl: process.env.X402_FACILITATOR_URL ?? "",
+  x402FacilitatorKey: process.env.X402_FACILITATOR_KEY,
+  x402Network: process.env.X402_NETWORK ?? "base",
+  /** USDC on Base by default; the asset callers are quoted in. */
+  x402Asset: process.env.X402_ASSET ?? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  /** Where settled funds land — the creature's contract, not a company account. */
+  x402PayTo: process.env.X402_PAY_TO ?? "",
+  /** Floor on a quote, so dust calls are not free after rounding. */
+  x402MinChargeUsd: Number(process.env.X402_MIN_CHARGE_USD ?? 0.0001),
+  x402TimeoutSeconds: Number(process.env.X402_TIMEOUT_SECONDS ?? 30),
+  /** Assumed ceiling when a caller names no max_tokens, so a quote is finite. */
+  x402DefaultMaxTokens: Number(process.env.X402_DEFAULT_MAX_TOKENS ?? 1024),
+
   // --- capture: traffic becomes training data (src/capture.ts) ----------
   // Off unless explicitly enabled. Captures land in their own gitignored
   // directory and are promoted into the curated set by a separate review step.
