@@ -145,18 +145,31 @@ const FACE={EGG:"🥚",HAPPY:"🐙",PECKISH:"🐙",STARVING:"🦑",HIBERNATING:"
 const STATES=["none","OPEN — claimable","claimed, training","submitted, challengeable","CHALLENGED","finalized"];
 
 const $=(id)=>document.getElementById(id);
+// Everything the chain returns is attacker-controlled: any worker can finalize
+// an epoch and write an arbitrary `uri` string into the release registry.
+const esc=(v)=>String(v).replace(/[&<>"']/g,(c)=>(
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// A prefix check is not a scheme check — "http" also prefixes an attribute
+// break-out. Parse it, and require https.
+const safeUrl=(u)=>{try{return new URL(u).protocol==="https:"?u:null}catch{return null}};
+const isAddress=(a)=>/^0x[0-9a-fA-F]{40}$/.test(a);
 const err=(m)=>$("err").textContent=m;
 const short=(a)=>a.slice(0,6)+"…"+a.slice(-4);
 
 async function cfg(){
   const q=new URLSearchParams(location.search);
-  if(q.get("contract")) return {tomagachi:q.get("contract"),chainId:Number(q.get("chainId")||8453)};
+  const c=q.get("contract");
+  if(c){
+    if(!isAddress(c)) throw new Error("?contract= must be a 20-byte hex address");
+    return {tomagachi:c,chainId:Number(q.get("chainId")||8453)};
+  }
   try{ return await (await fetch("./deployment.json")).json(); }catch{ return null; }
 }
 
-const c0=await cfg();
+let c0=null, cfgErr=null;
+try{ c0=await cfg(); }catch(e){ cfgErr=e.message; }
 if(!c0?.tomagachi){
-  err("Not deployed yet — pass ?contract=0x… or place deployment.json beside this page.");
+  err(cfgErr ?? "Not deployed yet — pass ?contract=0x… or place deployment.json beside this page.");
 }else{
   const chain=c0.chainId===baseSepolia.id?baseSepolia:base;
   // Honour an explicit RPC from deployment.json or ?rpc=: the chain defaults
@@ -165,7 +178,10 @@ if(!c0?.tomagachi){
   const client=createPublicClient({chain,transport:http(rpcUrl)});
   const C={address:c0.tomagachi,abi:ABI};
   const scan=chain.blockExplorers.default.url;
-  $("addr").innerHTML=`<a href="${scan}/address/${c0.tomagachi}">${c0.tomagachi}</a>`;
+  const addrLink=document.createElement("a");
+  addrLink.href=`${scan}/address/${c0.tomagachi}`;
+  addrLink.textContent=c0.tomagachi;
+  $("addr").replaceChildren(addrLink);
 
   async function refresh(){
     try{
@@ -180,7 +196,7 @@ if(!c0?.tomagachi){
       $("face").textContent=FACE[mood];
       $("face").className="creature"+(mood==="HIBERNATING"?" sleep":"");
       $("mood").textContent=mood;
-      $("speech").textContent=`“${speech}”`;
+      $("speech").textContent=`“${speech}”`;   // textContent: never parsed as HTML
       $("sat").style.width=Math.min(100,Number(sat*100n/maxSat))+"%";
       $("tre").style.width=Math.min(100,Number(avail*100n/maxSat))+"%";
       $("fed").textContent=(+formatEther(fed)).toFixed(4);
@@ -188,9 +204,9 @@ if(!c0?.tomagachi){
       $("eps").textContent=eps.toString();
       $("rels").textContent=rels.toString();
 
-      if(token && token!=="0x0000000000000000000000000000000000000000"){
-        $("tokline").innerHTML=`<a href="https://pumpclaw.com/token/${token}">trade it →</a>
-          <span class="addr">${short(token)}</span>`;
+      if(isAddress(token) && token!=="0x0000000000000000000000000000000000000000"){
+        $("tokline").innerHTML=`<a href="https://pumpclaw.com/token/${esc(token)}">trade it →</a>
+          <span class="addr">${esc(short(token))}</span>`;
       }
 
       // current job
@@ -200,7 +216,7 @@ if(!c0?.tomagachi){
         const [seed,baseHash,dataset,steps,bounty,state]=await client.readContract({...C,functionName:"jobSpec",args:[id]});
         const st=Number(state);
         pill.textContent=live?"live":"idle"; pill.className="pill "+(live?"live":"idle");
-        $("job").innerHTML=`epoch <b>${id}</b> — ${STATES[st]}<br/>
+        $("job").innerHTML=`epoch <b>${esc(id)}</b> — ${esc(STATES[st]??"unknown")}<br/>
           bounty <b>${formatEther(bounty)} ETH</b> · ${steps} steps<br/>
           seed <span class="hash">${seed}</span><br/>
           warm-starts from <span class="hash">${baseHash==="0x"+"0".repeat(64)?"scratch":baseHash}</span><br/>
@@ -214,7 +230,7 @@ if(!c0?.tomagachi){
         out.push(`<tr><td>${ep}</td><td>${(Number(loss)/1000).toFixed(3)}</td>
           <td class="hash">${hash.slice(0,20)}…</td>
           <td class="hash"><a href="${scan}/address/${worker}">${short(worker)}</a></td>
-          <td>${uri.startsWith("http")?`<a href="${uri}">weights</a>`:""}</td></tr>`);
+          <td>${safeUrl(uri)?`<a href="${esc(uri)}" rel="noopener noreferrer">weights</a>`:""}</td></tr>`);
       }
       $("rows").innerHTML=out.join("")||
         `<tr><td colspan="5">no verified epochs yet — feed it, then open one</td></tr>`;

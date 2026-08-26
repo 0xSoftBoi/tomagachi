@@ -56,6 +56,13 @@ interface IPumpClawLPLocker {
 
 /// @notice NOM — proof of care. Minted for feeding the creature, for training
 /// it, and for defending it. Governance weight; no claim on funds.
+///
+/// DELIBERATELY NON-TRANSFERABLE. Voting weight is read live from `balanceOf`
+/// and replay is only prevented per address, so if NOM could move, one holder
+/// could vote the same tokens through an unlimited number of fresh addresses
+/// and capture both the challenge court and governance for free. Soulbound
+/// costs nothing here — NOM is a record of contribution, not an asset — and it
+/// closes that hole without the complexity of balance snapshots.
 contract NomToken {
     string public constant name = "Suwappu Nom";
     string public constant symbol = "NOM";
@@ -63,12 +70,10 @@ contract NomToken {
 
     uint256 public totalSupply;
     mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
 
     address public immutable minter;
 
     event Transfer(address indexed from, address indexed to, uint256 value);
-    event Approval(address indexed owner, address indexed spender, uint256 value);
 
     constructor(address _minter) {
         minter = _minter;
@@ -83,34 +88,18 @@ contract NomToken {
         emit Transfer(address(0), to, amount);
     }
 
-    function transfer(address to, uint256 amount) external returns (bool) {
-        _transfer(msg.sender, to, amount);
-        return true;
+    /// The ERC-20 surface is kept so wallets and explorers can read balances,
+    /// but every transfer path reverts. See the note above the contract.
+    function transfer(address, uint256) external pure returns (bool) {
+        revert("NOM: soulbound");
     }
 
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        emit Approval(msg.sender, spender, amount);
-        return true;
+    function approve(address, uint256) external pure returns (bool) {
+        revert("NOM: soulbound");
     }
 
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        uint256 allowed = allowance[from][msg.sender];
-        if (allowed != type(uint256).max) {
-            require(allowed >= amount, "NOM: allowance");
-            allowance[from][msg.sender] = allowed - amount;
-        }
-        _transfer(from, to, amount);
-        return true;
-    }
-
-    function _transfer(address from, address to, uint256 amount) internal {
-        require(balanceOf[from] >= amount, "NOM: balance");
-        unchecked {
-            balanceOf[from] -= amount;
-            balanceOf[to] += amount;
-        }
-        emit Transfer(from, to, amount);
+    function transferFrom(address, address, uint256) external pure returns (bool) {
+        revert("NOM: soulbound");
     }
 }
 
@@ -125,6 +114,13 @@ contract Tomagachi {
     /// no more gas to read than a constant.
     IPumpClawFactory public immutable PUMPCLAW_FACTORY;
     IPumpClawLPLocker public immutable PUMPCLAW_LOCKER;
+
+    /// keccak256 of the token parameters this creature is allowed to hatch
+    /// with. `hatch()` stays permissionless to CALL — anyone may midwife it —
+    /// but nobody can front-run the deployer and bind the creature's one and
+    /// only income stream to a token of their own choosing. Zero disables the
+    /// check (testnets and rehearsals).
+    bytes32 public immutable hatchCommitment;
 
     address internal constant PUMPCLAW_FACTORY_BASE =
         0xe5bCa0eDe9208f7Ee7FCAFa0415Ca3DC03e16a90;
@@ -141,6 +137,8 @@ contract Tomagachi {
     uint64 public constant VOTING_PERIOD = 3 days;
     uint64 public constant CHALLENGE_WINDOW = 6 hours;
     uint64 public constant JOB_TIMEOUT = 24 hours;
+    /// An epoch may escrow at most 1/4 of the treasury.
+    uint256 public constant MAX_BOUNTY_DIVISOR = 4;
 
     // ─────────────────────────────────────────────────────────────── vitals
 
@@ -177,6 +175,10 @@ contract Tomagachi {
     /// ETH that arrives by any route — even one that never runs `receive` —
     /// still counts.
     uint256 public accounted;
+    /// Payouts credited but not yet collected. Held in the balance, so they are
+    /// subtracted from `available()` or the creature would re-spend them.
+    uint256 public owed;
+    mapping(address => uint256) public withdrawable;
     mapping(address => uint256) public fedBy;
 
     // ────────────────────────────────────────────────────── the compute game
@@ -266,6 +268,8 @@ contract Tomagachi {
     event ChallengeVoted(uint256 indexed id, address indexed voter, bool forWorker, uint256 weight);
     event EpochFinalized(uint256 indexed id, address indexed worker, bytes32 modelHash, uint256 payout);
     event EpochVoided(uint256 indexed id, string reason);
+    event PaymentQueued(address indexed to, uint256 amount);
+    event Withdrawn(address indexed to, uint256 amount);
     event Proposed(uint256 indexed id, address indexed proposer, Param param, uint256 value, string rationale);
     event ProposalVoted(uint256 indexed id, address indexed voter, bool support, uint256 weight);
     event ProposalExecuted(uint256 indexed id, Param param, uint256 value);
@@ -287,8 +291,10 @@ contract Tomagachi {
         uint256 _maxSatiety,
         bytes32 _datasetHash,
         address _factory,
-        address _locker
+        address _locker,
+        bytes32 _hatchCommitment
     ) {
+        hatchCommitment = _hatchCommitment;
         PUMPCLAW_FACTORY = IPumpClawFactory(
             _factory == address(0) ? PUMPCLAW_FACTORY_BASE : _factory
         );
@@ -323,6 +329,13 @@ contract Tomagachi {
     ) external nonReentrant returns (address) {
         require(!hatched, "already hatched");
         require(address(PUMPCLAW_FACTORY).code.length > 0, "no PumpClaw on this chain");
+        require(
+            hatchCommitment == bytes32(0) ||
+                keccak256(
+                    abi.encode(name_, symbol_, imageUrl, websiteUrl, totalSupply_, initialFdv)
+                ) == hatchCommitment,
+            "hatch: not the committed parameters"
+        );
         hatched = true;
         (address t, uint256 pid) = PUMPCLAW_FACTORY.createToken(
             name_, symbol_, imageUrl, websiteUrl, totalSupply_, initialFdv, address(this)
@@ -405,7 +418,9 @@ contract Tomagachi {
         require(block.timestamp >= lastEpochOpenedAt + epochCooldown, "cooldown");
         require(!hasLiveEpoch(), "epoch in flight");
         uint256 bounty = bountyWei;
-        require(available() >= bounty, "treasury too thin");
+        // No single epoch may commit more than a quarter of the treasury, so
+        // even a captured `bountyWei` cannot drain it in one go.
+        require(bounty > 0 && available() >= bounty * MAX_BOUNTY_DIVISOR, "treasury too thin");
 
         id = epochs.length;
         // Deterministic, unpredictable-at-open seed: workers cannot precompute
@@ -559,11 +574,28 @@ contract Tomagachi {
         _pay(e.worker, payout);
     }
 
+    /// @dev Credit, never push. A payee contract that reverts on receive would
+    /// otherwise revert finalize() forever, and since `hasLiveEpoch()` blocks
+    /// `openEpoch()` on any unfinalized last epoch, one such payee would halt
+    /// the creature permanently and strand its escrow. There is no admin to
+    /// unstick it, so payment must not be able to fail.
     function _pay(address to, uint256 amount) internal {
         if (amount == 0) return;
+        withdrawable[to] += amount;
+        owed += amount;
+        emit PaymentQueued(to, amount);
+    }
+
+    /// @notice Collect what the creature owes you. Anyone with a credit.
+    function withdraw() external nonReentrant returns (uint256 amount) {
+        amount = withdrawable[msg.sender];
+        require(amount > 0, "nothing owed");
+        withdrawable[msg.sender] = 0;
+        owed -= amount;
         accounted -= amount;
-        (bool ok, ) = to.call{value: amount}("");
-        require(ok, "pay failed");
+        (bool ok, ) = msg.sender.call{value: amount}("");
+        require(ok, "withdraw failed");
+        emit Withdrawn(msg.sender, amount);
     }
 
     // ─────────────────────────────────────────────────────────── governance
@@ -624,6 +656,9 @@ contract Tomagachi {
             require(p.value > 0 && p.value <= 10_000_000, "range");
             stepsPerEpoch = uint32(p.value);
         } else if (p.param == Param.BOUNTY) {
+            // Every other parameter is bounded; an unbounded bounty would let a
+            // single passed proposal escrow the entire treasury to one worker.
+            require(p.value > 0 && p.value <= maxSatiety, "range");
             bountyWei = p.value;
         } else if (p.param == Param.COOLDOWN) {
             require(p.value <= 30 days, "range");
@@ -651,10 +686,12 @@ contract Tomagachi {
         return burned >= satietyStored ? 0 : satietyStored - burned;
     }
 
-    /// Treasury not already committed to an epoch or held as someone's stake.
+    /// Treasury not already committed to an epoch, held as someone's stake, or
+    /// owed to someone who has not collected it yet.
     function available() public view returns (uint256) {
         uint256 bal = address(this).balance;
-        return bal > escrowed ? bal - escrowed : 0;
+        uint256 committed = escrowed + owed;
+        return bal > committed ? bal - committed : 0;
     }
 
     function mood() public view returns (Mood) {

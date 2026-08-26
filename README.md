@@ -48,13 +48,14 @@ creature's treasury. There is no owner variable.
 - **Trade its token** — every swap pays it 80% of the fee. Trading *is* feeding.
   This is the whole point: the creature's life is powered by its own market.
 - **Feed it directly** — send ETH, or call `feedMe()`. You mint **NOM**, 1000 per ETH.
+  NOM is **non-transferable** — a record of contribution, not an asset.
 - **Poke it** — `feed()` claims its accrued fees and `openEpoch()` commissions
   the next training run. Both permissionless; feeding pays NOM for the gas.
 - **Keep it alive** — satiety decays daily. Starve it and it **hibernates**:
   `openEpoch()` reverts until someone feeds it. Neglect has consequences.
 - **Train it** — stake ETH on an open epoch, run the job against the seed *and
   dataset hash* the contract names, publish the weights, submit the hash,
-  collect the bounty and 100 NOM.
+  collect the bounty and 100 NOM with `withdraw()`.
 - **Police it** — re-run any epoch. If your hash differs, `challenge()` with a
   bond. NOM holders vote; the loser's stake goes to the winner.
 - **Steer it** — hold 50 NOM to `propose()`; passed votes rewrite the creature's
@@ -212,6 +213,27 @@ Every piece has also been run together on a live chain, in order:
 
 That is the full loop: trading volume becomes compute, compute becomes an open
 model, and anyone can verify the model against the chain.
+
+## Security
+
+The contract is immutable and ownerless: no admin key, no withdraw, no upgrade
+path. Every flaw would be permanent, so it was reviewed adversarially before
+deployment. Seven findings were confirmed against the source and fixed; each has
+a test that fails against the old code.
+
+| finding | fix |
+|---|---|
+| **RCE on every worker.** The release `uri` is written on-chain by whoever finalizes an epoch — anyone. Workers fed it to `torch.load(weights_only=False)`, executing the attacker's pickle *before* the hash check could reject it. | `weights_only=True` on every load path, plus strict validation of the URI shape. Verified: a crafted payload executes under the old call and is refused under the new one. |
+| **Permanent brick.** `_pay` pushed ETH and reverted on failure. A payee that rejects ETH would wedge `finalize()` forever, and `hasLiveEpoch()` would then block every future epoch — with no admin to unstick it. | Payments are credited and collected with `withdraw()`. `finalize()` now moves no ETH at all. |
+| **Free vote amplification.** Weight was read live from a transferable NOM with only per-address replay protection, so one holder could vote the same tokens from unlimited fresh addresses and capture the court and governance. | NOM is soulbound. |
+| **Treasury drain via governance.** Every parameter was bounded except `BOUNTY`. | Bounded, and no epoch may escrow more than a quarter of the treasury. |
+| **Hatch front-running.** `hatch()` is permissionless and runs in a separate transaction from deploy, so an observer could bind the creature's only income stream to a token of their choosing, irreversibly. | The deployer commits the parameters in the constructor; `hatch()` stays permissionless to *call*. |
+| **Stored XSS.** The same attacker-controlled `uri` went raw into `innerHTML`; `startsWith("http")` is a prefix check, not a sanitiser. | Escaped, and the scheme is parsed rather than prefix-matched. |
+| **Reflected XSS.** `?contract=` went raw into `innerHTML`. | Validated as an address; the link is built with `textContent`. |
+
+Verified on a Base mainnet fork against the live PumpClaw contracts (48 checks),
+and end-to-end by publishing a real XSS payload into the on-chain registry and
+rendering the page against it.
 
 ## Economics, plainly
 

@@ -19,7 +19,10 @@
  *   MAX_SATIETY_ETH  full belly (default 1)
  *   SKIP_HATCH=1     deploy only, hatch later
  */
-import { createWalletClient, createPublicClient, http, parseEther, formatEther } from "viem";
+import {
+  createWalletClient, createPublicClient, http, parseEther, formatEther,
+  encodeAbiParameters, keccak256,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
 import { createHash } from "node:crypto";
@@ -87,7 +90,19 @@ console.log(`deploying the creature to ${chain.name}`);
 console.log(`  deployer     : ${account.address} (gains no authority)`);
 console.log(`  metabolism   : ${formatEther(metabolism)} ETH/day`);
 console.log(`  full belly   : ${formatEther(maxSatiety)} ETH`);
+// hatch() is permissionless to call, and deploy and hatch are separate
+// transactions, so without this an observer could front-run the deployer and
+// bind the creature's only income stream to a token of their choosing —
+// irreversibly, since there is no admin and no second chance.
+const hatchCommitment = keccak256(
+  encodeAbiParameters(
+    [{ type: "string" }, { type: "string" }, { type: "string" }, { type: "string" },
+     { type: "uint256" }, { type: "uint256" }],
+    [name, symbol, imageUrl, siteUrl, supply, fdv]
+  )
+);
 console.log(`  dataset      : ${datasetHash}`);
+console.log(`  hatch commit : ${hatchCommitment}`);
 
 if (wantMocks) {
   console.log(`\n${chain.name} has no PumpClaw — deploying mocks for the rehearsal`);
@@ -115,7 +130,7 @@ if (wantMocks) {
 const deployHash = await wallet.deployContract({
   abi: artifact.abi,
   bytecode: artifact.bytecode,
-  args: [metabolism, maxSatiety, datasetHash, factory, locker],
+  args: [metabolism, maxSatiety, datasetHash, factory, locker, hatchCommitment],
 });
 const receipt = await client.waitForTransactionReceipt({ hash: deployHash });
 const tomagachi = receipt.contractAddress!;

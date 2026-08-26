@@ -75,7 +75,7 @@ def _verdict(ratio: float) -> str:
 
 class Forecaster:
     def __init__(self, checkpoint: str):
-        ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        ckpt = torch.load(checkpoint, map_location="cpu", weights_only=True)
         self.symbols: list[str] = list(ckpt["symbols"])
         self.horizon: int = int(ckpt.get("horizon", HORIZON))
         self.model = SuwaExecutionModel(

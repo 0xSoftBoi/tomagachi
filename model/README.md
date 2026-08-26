@@ -154,6 +154,14 @@ In a JEPA the target encoder is a moving goalpost, so prediction loss drifts
 upward as the representation gets richer — the lowest loss belongs to the most
 *collapsed* encoder. Health is judged by effective rank, never by that loss.
 
+## Never unpickle a release
+
+Checkpoints load with `weights_only=True` everywhere. The release URI is written
+on-chain by whichever worker finalized the previous epoch — anyone — so the
+artifact it points at is untrusted input. Under the old `weights_only=False` the
+pickle executed *before* the hash check could reject it, which made the
+integrity check unreachable defence. Keep any new load path `weights_only=True`.
+
 ## Verify a release against the chain
 
 ```bash

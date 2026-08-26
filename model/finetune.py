@@ -166,7 +166,7 @@ def train_model(w, tr, va, steps, batch, lr, seed, backbone_path=None,
     torch.manual_seed(seed)
     model = SuwaExecutionModel(w.A, w.F, D_MODEL, n_scales=N_SCALES)
     if backbone_path:
-        ckpt = torch.load(backbone_path, map_location="cpu", weights_only=False)
+        ckpt = torch.load(backbone_path, map_location="cpu", weights_only=True)
         model.backbone.load_state_dict(ckpt["backbone"])
     if freeze:
         for p in model.backbone.parameters():

@@ -27,6 +27,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -49,6 +50,13 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+# The release URI is written on-chain by whichever worker finalized the previous
+# epoch — i.e. by anyone. Treat it as hostile input: it selects a download and a
+# filesystem path, so anything but an exact expected shape is refused.
+_HF_URI = re.compile(r"^https://huggingface\.co/([A-Za-z0-9][\w.-]*)/([A-Za-z0-9][\w.-]*)/?$")
+_RUN_URI = re.compile(r"^run://([A-Za-z0-9][\w.-]*)$")
+
+
 def resolve_base(base_uri: str | None, out: Path, epoch: int) -> str | None:
     """Find the checkpoint this epoch continues from."""
     if not base_uri:
@@ -56,11 +64,17 @@ def resolve_base(base_uri: str | None, out: Path, epoch: int) -> str | None:
         return str(prev) if prev.exists() else None
 
     if base_uri.startswith("run://"):
-        prev = out.parent / base_uri.removeprefix("run://") / "checkpoint.pt"
+        m = _RUN_URI.match(base_uri)
+        if not m:
+            # "run://../.." or "run:///tmp/x" would escape the runs directory:
+            # pathlib drops everything before an absolute component.
+            raise SystemExit(f"refusing unsafe run:// base URI: {base_uri!r}")
+        prev = out.parent / m.group(1) / "checkpoint.pt"
         return str(prev) if prev.exists() else None
 
-    if "huggingface.co/" in base_uri:
-        repo = base_uri.split("huggingface.co/", 1)[1].strip("/")
+    m = _HF_URI.match(base_uri)
+    if m:
+        repo = f"{m.group(1)}/{m.group(2)}"
         try:
             from huggingface_hub import hf_hub_download
 
@@ -71,7 +85,11 @@ def resolve_base(base_uri: str | None, out: Path, epoch: int) -> str | None:
             )
         except Exception as e:
             print(f"could not fetch base weights from {repo}: {e}")
-    return None
+        return None
+
+    raise SystemExit(
+        f"refusing base URI {base_uri!r}: expected https://huggingface.co/<owner>/<repo>"
+    )
 
 
 def main() -> None:
@@ -124,7 +142,7 @@ def main() -> None:
 
     base = resolve_base(args.base_uri, out, args.epoch)
     if base:
-        ckpt = torch.load(base, map_location="cpu", weights_only=False)
+        ckpt = torch.load(base, map_location="cpu", weights_only=True)
         actual = canonical_hash(ckpt["model"])
         if args.base_hash and actual != args.base_hash.lower().removeprefix("0x"):
             raise SystemExit(
