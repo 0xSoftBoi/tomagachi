@@ -124,7 +124,7 @@
         "hot-reload-on-epoch"
       ],
       "verify": "the brain reads open proposals and orders the rotation by vote weight; falls back to round-robin when there are none",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "security-review-serve",

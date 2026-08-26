@@ -35,6 +35,18 @@ export interface Vitals {
   epochs: bigint;
 }
 
+export interface Proposal {
+  id: number;
+  proposer: string;
+  direction: string;
+  deadline: number;
+  yes: bigint;
+  no: bigint;
+  /** Net support in NOM. Negative means the room said no. */
+  net: bigint;
+  open: boolean;
+}
+
 export class Creature {
   readonly deployment: Deployment;
   readonly chain: Chain;
@@ -50,6 +62,48 @@ export class Creature {
     const transport = http(config.rpcUrl);
     this.client = createPublicClient({ chain: this.chain, transport });
     this.wallet = createWalletClient({ account: this.account, chain: this.chain, transport });
+  }
+
+  /**
+   * Open proposals with their vote weights. Read-only: the brain never votes,
+   * it only listens. Returns [] on any read failure — governance informing the
+   * rotation must never be able to stop the creature training.
+   */
+  async proposals(limit = 32): Promise<Proposal[]> {
+    try {
+      const count = (await this.client.readContract({
+        address: this.deployment.tomagachi,
+        abi: tomagachiAbi,
+        functionName: "proposalCount",
+      })) as bigint;
+
+      const now = Math.floor(Date.now() / 1000);
+      const out: Proposal[] = [];
+      const from = count > BigInt(limit) ? count - BigInt(limit) : 0n;
+      for (let i = count; i > from; i--) {
+        const id = i - 1n;
+        const [proposer, direction, deadline, yes, no] = (await this.client.readContract({
+          address: this.deployment.tomagachi,
+          abi: tomagachiAbi,
+          functionName: "proposals",
+          args: [id],
+        })) as [string, string, bigint, bigint, bigint];
+        out.push({
+          id: Number(id),
+          proposer,
+          direction,
+          deadline: Number(deadline),
+          yes,
+          no,
+          net: yes - no,
+          open: Number(deadline) > now,
+        });
+      }
+      return out;
+    } catch (e: any) {
+      console.warn(`[governance] could not read proposals: ${e.message ?? e}`);
+      return [];
+    }
   }
 
   async vitals(): Promise<Vitals> {

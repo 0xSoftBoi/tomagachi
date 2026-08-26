@@ -42,8 +42,10 @@ autonomous agent that turns every token you feed it into training compute.
 - **It learns in public.** Each training epoch ends with
   `checkpoint(epoch, sha256, uri, loss, spent)` on-chain. Anyone can
   `sha256sum` the released weights against the chain.
-- **You steer it.** NOM holders `propose()` and `vote()` on training
-  directions — bigger worlds, new dynamics, scaling runs.
+- **You steer it, and it listens.** NOM holders `propose()` and `vote()`; the
+  brain reads the open proposals and trains whichever character has the most
+  net support. Name the SKU id (`more suwa-abyss`) — a proposal about the reef
+  is about the reef. Quiet week, round-robin.
 
 ## The models — SUWA-LM, and the dream
 

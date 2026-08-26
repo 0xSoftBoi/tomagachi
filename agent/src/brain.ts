@@ -21,6 +21,7 @@ import { loadState, saveState } from "./state.js";
 import { Creature } from "./chain.js";
 import { EpochRejectedError, makeProvider } from "./compute.js";
 import { publishEpoch } from "./adapters.js";
+import { chooseCharacter } from "./governance.js";
 import { catalog as characterCatalog } from "./characters.js";
 import { metrics } from "./usage.js";
 import * as suwappu from "./suwappu.js";
@@ -143,20 +144,29 @@ export class Brain {
     }
   }
 
-  /** Which SKU this epoch belongs to: round-robin, so the fleet grows evenly. */
-  nextCharacter(epoch: number): string | undefined {
+  /**
+   * Which SKU this epoch belongs to. NOM holders decide when they have said
+   * something; round-robin when they have not, so the fleet still grows evenly
+   * during a quiet week.
+   */
+  async nextCharacter(epoch: number): Promise<string | undefined> {
     if (config.trainTarget !== "adapter") return undefined;
+    const characters = characterCatalog().characters;
     const rotation = config.characterRotation.length
       ? config.characterRotation
-      : characterCatalog().characters.map((c) => c.id);
+      : characters.map((c) => c.id);
     if (!rotation.length) throw new Error("no characters in model/characters.json");
-    return rotation[(epoch - 1) % rotation.length];
+
+    const proposals = config.governanceRotation ? await this.creature.proposals() : [];
+    const choice = chooseCharacter(epoch, rotation, proposals, characters);
+    console.log(`[governance] training ${choice.character}: ${choice.reason}`);
+    return choice.character;
   }
 
   async trainEpoch(cost: bigint): Promise<void> {
     const state = loadState();
     const epoch = state.epoch + 1;
-    const character = this.nextCharacter(epoch);
+    const character = await this.nextCharacter(epoch);
     const jobRef = character ? `${character}-epoch-${epoch}` : `suwa-wm-epoch-${epoch}`;
     const outDir = join(config.runsDir, jobRef);
 

@@ -66,6 +66,8 @@ export const config = {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
+  /** Let open NOM proposals pick what trains next; round-robin when quiet. */
+  governanceRotation: process.env.GOVERNANCE_ROTATION !== "0",
   /** Steps per adapter epoch — far fewer than the world model needed. */
   stepsPerAdapterEpoch: Number(process.env.STEPS_PER_ADAPTER_EPOCH ?? 300),
   /** Train against the local byte-level backbone: no downloads, no GPU, smoke test only. */
