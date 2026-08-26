@@ -79,6 +79,20 @@ lists, streaming and non-streaming completions with usage, and the error codes
 that matter. It also prints TTFT and throughput — the two numbers published on
 your model page. **Do not send anyone the URL until this exits zero.**
 
+## 5b. Put the numbers where people see them
+
+The vitals page reads `/metrics` straight from the shop:
+
+```
+https://your-vitals-page/?shop=https://your-endpoint
+```
+
+It colours the three figures that are gates — realized $/M, GPU utilization,
+gross — and prints the burn underneath. `STATUS_CORS_ORIGIN` controls which
+origin may read `/healthz` and `/metrics`; the billing routes are never shared
+cross-origin. The panel renders whether or not the contract is reachable: the
+shop and the chain are separate systems and should not share a failure mode.
+
 ## 6. Go live, deliberately
 
 Everything ships with `is_ready: false`, so models are staged and invisible.

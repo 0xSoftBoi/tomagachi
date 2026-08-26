@@ -26,6 +26,7 @@ import { catalog, findCharacter, type Character } from "./characters.js";
 import { metrics, record } from "./usage.js";
 import { recall, remember } from "./memory.js";
 import { providerManifest } from "./provider-manifest.js";
+import { SseTally } from "./stream.js";
 
 interface ChatMessage {
   role: string;
@@ -73,7 +74,7 @@ function sessionId(req: IncomingMessage, body: ChatRequest): string | undefined 
  * keep it and add our consistency rules behind it. If it sent none, the
  * character speaks in full. SUWA_PERSONA=off serves the adapter bare.
  */
-function composeMessages(character: Character, body: ChatRequest, session?: string): ChatMessage[] {
+export function composeMessages(character: Character, body: ChatRequest, session?: string): ChatMessage[] {
   if (config.personaMode === "off") return body.messages;
 
   const theirs = body.messages.filter((m) => m.role === "system");
@@ -205,11 +206,8 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string
     connection: "keep-alive",
   });
 
-  let promptTokens = 0;
-  let completionTokens = 0;
-  let completionChars = 0;
-  let buffered = "";
-
+  // Forward bytes untouched; count the same bytes on the way past.
+  const sse = new SseTally();
   const reader = upstream.body!.getReader();
   const decoder = new TextDecoder();
   try {
@@ -218,28 +216,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string
       if (done) break;
       const chunk = decoder.decode(value, { stream: true });
       res.write(chunk);
-
-      // Watch the stream for the usage frame without getting in its way.
-      buffered += chunk;
-      const lines = buffered.split("\n");
-      buffered = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (!data || data === "[DONE]") continue;
-        try {
-          const frame = JSON.parse(data);
-          if (frame.usage) {
-            promptTokens = frame.usage.prompt_tokens ?? promptTokens;
-            completionTokens = frame.usage.completion_tokens ?? completionTokens;
-          }
-          for (const choice of frame.choices ?? []) {
-            completionChars += (choice.delta?.content ?? "").length;
-          }
-        } catch {
-          // Partial frame across a chunk boundary; the next read completes it.
-        }
-      }
+      sse.push(chunk);
     }
   } catch (e: any) {
     console.error(`[serve] stream from upstream broke: ${e.message}`);
@@ -247,8 +224,8 @@ async function handleChat(req: IncomingMessage, res: ServerResponse, raw: string
     res.end();
     // Never bill zero for work that happened: fall back to an estimate.
     finish(
-      promptTokens || estimateTokens(promptChars),
-      completionTokens || estimateTokens(completionChars)
+      sse.tally.promptTokens || estimateTokens(promptChars),
+      sse.tally.completionTokens || estimateTokens(sse.tally.completionChars)
     );
   }
 }
@@ -286,6 +263,15 @@ export function startServer(): void {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
+    // The vitals page reads these from another origin. Only the two read-only
+    // status routes are shared; nothing that bills is.
+    if (path === "/healthz" || path === "/metrics") {
+      res.setHeader("access-control-allow-origin", config.statusCorsOrigin);
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, { "access-control-allow-headers": "content-type" });
+        return res.end();
+      }
+    }
     if (path === "/healthz") return json(res, 200, { ok: true });
     if (path === "/metrics") return json(res, 200, metrics());
     // Schema 2.4. This is what a router reads; /v1/models is for everyone else.

@@ -94,6 +94,8 @@ export const config = {
   serveApiKey: process.env.SERVE_API_KEY,
   serveContextLength: Number(process.env.SERVE_CONTEXT_LENGTH ?? 32768),
   serveMaxBodyBytes: Number(process.env.SERVE_MAX_BODY_BYTES ?? 2_000_000),
+  /** Origin allowed to read /healthz and /metrics — the vitals page. Billing routes never share. */
+  statusCorsOrigin: process.env.STATUS_CORS_ORIGIN ?? "*",
 
   /** The GPU underneath: any OpenAI-compatible server (vLLM with one LoRA per SKU). */
   upstreamBaseUrl: process.env.UPSTREAM_BASE_URL ?? "http://localhost:8000/v1",
@@ -145,7 +147,8 @@ export const config = {
    */
   complianceZdr: process.env.COMPLIANCE_ZDR === "1",
 
-  stateDir: join(agentDir, "state"),
+  /** Ledger and session store. Overridable so tests and containers can isolate it. */
+  stateDir: process.env.STATE_DIR ?? join(agentDir, "state"),
   runsDir: join(repoRoot, "runs"),
   modelDir: join(repoRoot, "model"),
 };

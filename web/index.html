@@ -47,16 +47,25 @@
   a { color: var(--glow); }
   .feedbox { background: #072a41; border: 1px solid #1c5d8a; border-radius: 12px; padding: 1rem 1.2rem; font-size: .82rem; line-height: 1.7; }
   .err { color: var(--bad); font-size: .8rem; margin-top: 1rem; }
+  /* the shop: what the creature earns back */
+  .shop { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .8rem; }
+  .shop .stat { text-align: left; }
+  .shop .stat b { font-size: 1rem; }
+  .shop .stat .goal { display: block; font-size: .6rem; opacity: .55; letter-spacing: .08em; margin-top: .35rem; text-transform: none; }
+  .stat.good b { color: #7ae582; }
+  .stat.warn b { color: var(--accent); }
+  .shop-note { font-size: .72rem; opacity: .6; margin-top: .8rem; line-height: 1.6; }
+  .offline { font-size: .78rem; opacity: .6; }
 </style>
 </head>
 <body>
 <main>
   <h1>Suwappu Tomagachi</h1>
   <p class="sub">
-    An on-chain creature on Base. It eats stablecoins, buys decentralized
-    compute, and trains <a href="https://github.com/0xSoftBoi/tomagachi">SUWA-WM</a>,
-    an open-source world model, for everyone. Feeding mints NOM — your vote on
-    what it learns next.
+    An on-chain creature on Base. It eats stablecoins, buys compute, trains
+    <a href="https://github.com/0xSoftBoi/tomagachi">character models</a>, and
+    sells them back to the world to feed itself. Weights go open after 90 days.
+    Feeding mints NOM — your vote on what it learns next.
   </p>
 
   <div class="tank">
@@ -73,6 +82,18 @@
       <div class="stat"><b id="epochs">–</b><span>epochs trained</span></div>
     </div>
   </div>
+
+  <section id="shop-section" hidden>
+    <h2>The shop (last 7 days)</h2>
+    <div class="shop">
+      <div class="stat" id="stat-realized"><b id="realized">–</b><span>realized $/M</span><span class="goal">gate: &gt; $0.60</span></div>
+      <div class="stat" id="stat-util"><b id="util">–</b><span>GPU utilization</span><span class="goal">gate: &gt; 50%</span></div>
+      <div class="stat"><b id="tokens">–</b><span>tokens served</span><span class="goal">target: 6.5B/wk</span></div>
+      <div class="stat" id="stat-gross"><b id="gross">–</b><span>gross revenue</span><span class="goal">gate: &gt; $400/wk</span></div>
+      <div class="stat"><b id="apps">–</b><span>apps routing</span><span class="goal">target: 5+</span></div>
+    </div>
+    <p class="shop-note" id="shop-note"></p>
+  </section>
 
   <section>
     <h2>Feed me</h2>
@@ -97,8 +118,6 @@
 </main>
 
 <script type="module">
-import { createPublicClient, http, formatUnits } from "https://esm.sh/viem@2.21.0";
-import { base, baseSepolia } from "https://esm.sh/viem@2.21.0/chains";
 
 const ABI = [
   { name: "vitals", type: "function", stateMutability: "view", inputs: [], outputs: [
@@ -121,6 +140,14 @@ const WORDS = {
   HIBERNATING: "zzz… feed me to restart the training loop…",
 };
 
+/**
+ * The shop's own numbers. Revenue is food in this design, so the P&L belongs
+ * next to satiety rather than in a dashboard nobody opens. Targets are the
+ * gates from research/operating-plan.md.
+ */
+const SHOP_URL = new URLSearchParams(location.search).get("shop")
+  ?? (window.SUWA_SHOP_URL ?? "");
+
 async function loadConfig() {
   const q = new URLSearchParams(location.search);
   if (q.get("contract")) return { tomagachi: q.get("contract"), chain: q.get("chain") ?? "base" };
@@ -130,10 +157,75 @@ async function loadConfig() {
 const err = (m) => (document.getElementById("err").textContent = m);
 const $ = (id) => document.getElementById(id);
 
-const cfg = await loadConfig();
-if (!cfg?.tomagachi) {
+async function refreshShop() {
+  if (!SHOP_URL) return; // no shop configured; the section stays hidden
+  try {
+    const m = await (await fetch(SHOP_URL.replace(/\/+$/, "") + "/metrics")).json();
+    $("shop-section").hidden = false;
+
+    // Early on the numbers are cents. Rounding them to "$0" reads as broken
+// rather than as small, so keep precision until the figures grow.
+const usd = (n) => "$" + Number(n).toLocaleString(undefined, {
+  maximumFractionDigits: Math.abs(Number(n)) < 10 ? 4 : 2,
+});
+    $("realized").textContent = "$" + Number(m.realizedUsdPerM ?? 0).toFixed(2);
+    $("util").textContent = ((m.gpuUtilization ?? 0) * 100).toFixed(1) + "%";
+    $("tokens").textContent = fmtTokens(m.tokens ?? 0);
+    $("gross").textContent = usd(m.grossUsd ?? 0);
+    $("apps").textContent = String((m.apps ?? []).length);
+
+    // Colour only the three numbers that are actually gates.
+    mark("stat-realized", (m.realizedUsdPerM ?? 0) >= 0.6);
+    mark("stat-util", (m.gpuUtilization ?? 0) >= 0.5);
+    mark("stat-gross", (m.grossUsd ?? 0) >= 400);
+
+    $("shop-note").textContent = m.selfSustaining
+      ? "The shop covers its own GPU. The creature is feeding itself."
+      : `Still burning ${usd(Math.max((m.gpuCostUsd ?? 0) - (m.grossUsd ?? 0), 0))} a week`
+        + (m.weeksOfRunway ? ` — about ${m.weeksOfRunway} weeks of runway left.` : ".");
+  } catch {
+    // A shop that is down must not take the vitals page with it.
+    $("shop-section").hidden = false;
+    $("shop-note").innerHTML = '<span class="offline">shop endpoint unreachable — '
+      + 'the creature still trains, it just is not selling right now.</span>';
+  }
+}
+
+function fmtTokens(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(n);
+}
+
+function mark(id, ok) {
+  const el = $(id);
+  el.classList.toggle("good", ok);
+  el.classList.toggle("warn", !ok);
+}
+
+refreshShop();
+setInterval(refreshShop, 30_000);
+
+// Loaded lazily so a CDN hiccup costs the vitals, not the whole page.
+let viem, chains;
+try {
+  [viem, chains] = await Promise.all([
+    import("https://esm.sh/viem@2.21.0"),
+    import("https://esm.sh/viem@2.21.0/chains"),
+  ]);
+} catch {
+  err("chain library unavailable — vitals are offline, but the shop above is live");
+}
+
+const cfg = viem ? await loadConfig() : null;
+if (!viem) {
+  // already reported
+} else if (!cfg?.tomagachi) {
   err("Not deployed yet — pass ?contract=0x… or drop deployment.json next to this page.");
 } else {
+  const { createPublicClient, http, formatUnits } = viem;
+  const { base, baseSepolia } = chains;
   const chain = cfg.chain === "baseSepolia" ? baseSepolia : base;
   const client = createPublicClient({ chain, transport: http() });
   const c = { address: cfg.tomagachi, abi: ABI };

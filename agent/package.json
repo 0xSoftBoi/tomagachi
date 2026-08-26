@@ -9,7 +9,8 @@
     "deploy": "tsx scripts/deploy.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "serve": "tsx src/serve-main.ts"
+    "serve": "tsx src/serve-main.ts",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "viem": "^2.21.0"

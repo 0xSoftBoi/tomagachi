@@ -67,7 +67,7 @@ matters, with the market data behind it, is in
 | [`agent/`](agent/) | the brain: Suwappu swaps, compute brokerage, on-chain ops |
 | [`agent/src/serve.ts`](agent/src/serve.ts) | the shop: OpenAI-compatible endpoint, pricing, usage ledger |
 | [`model/`](model/) | SUWA-LM character adapters, SUWA-WM world model |
-| [`web/`](web/) | live vitals page (static, reads Base directly) |
+| [`web/`](web/) | live vitals page: satiety from Base, P&L from the shop |
 | [`deploy/`](deploy/) | vLLM config, preflight tests, the listing checklist |
 | [`research/`](research/) | market scans, unit economics, the operating plan |
 
@@ -91,6 +91,7 @@ curl localhost:8080/metrics                                # realized $/M, GPU u
 
 # 4. face — host web/ anywhere static, with deployment.json alongside
 cp deployment.json ../web/ && npx serve ../web
+#    add ?shop=https://your-endpoint to show the P&L next to satiety
 ```
 
 `npm start` runs the brain and the shop together; `SERVE=0` runs the brain
