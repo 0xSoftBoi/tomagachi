@@ -122,7 +122,7 @@ risk on ETH right now?"*
 | [`model/`](model/) | SUWA-WM: data pipeline, pretraining, fine-tuning, verifier |
 | [`tools/`](tools/) | MCP server — the model as skills any agent can call |
 | [`data/`](data/) | the pinned corpus — hashed on-chain, every worker must match it |
-| [`web/`](web/) | live vitals page, reads Base directly |
+| [`web/`](web/) | live vitals page — reads Base directly, no CDN, no backend |
 
 ## Go live
 
@@ -141,6 +141,7 @@ pip install -r ../model/requirements.txt
 PRIVATE_KEY=0x... npm start
 
 # The face: host web/ anywhere static, with deployment.json beside it.
+# Self-contained — viem is vendored, so it works offline of any CDN.
 cp deployment.json ../web/ && npx serve ../web
 ```
 
@@ -190,6 +191,27 @@ creature is born hibernating, simulated trading fees are accrued on its token,
 a permissionless `feed()` pulls exactly the 80% creator share, it wakes, and
 `openEpoch()` becomes reachable — the thing that was impossible while the
 PumpClaw addresses were hardcoded.
+
+### The whole system, once, for real
+
+Every piece has also been run together on a live chain, in order:
+
+1. Deployed and hatched; the creature is born **hibernating**.
+2. `accrue()` simulates 0.25 ETH of trading on `$SUWA`; a permissionless
+   `feed()` pulls exactly the 0.2 ETH creator share into it.
+3. A contributor calls `feedMe()`, earns NOM, **proposes and passes a
+   governance vote** that rewrites `stepsPerEpoch` on-chain.
+4. The unprivileged daemon opens an epoch, stakes, and trains the real
+   SUWA-WM against the seed *and* dataset hash the contract published.
+5. It submits the weight hash, waits out the challenge window, finalizes and
+   collects the bounty. The creature pays out 0.002 ETH.
+6. `latestModel()` returns `0x9c8b3dc3…`; `model/verify.py` recomputes the same
+   hash from the weights on disk — **MATCH**.
+7. `creature_vitals` over MCP and the web page both read it live.
+8. Epoch 1 opens automatically, warm-starting from epoch 0's verified hash.
+
+That is the full loop: trading volume becomes compute, compute becomes an open
+model, and anyone can verify the model against the chain.
 
 ## Economics, plainly
 

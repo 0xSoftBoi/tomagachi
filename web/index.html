@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Suwappu Tomagachi</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%99%3C/text%3E%3C/svg%3E" />
 <style>
   :root {
     --deep:#06283d; --mid:#0b3d5c; --foam:#dff6ff; --glow:#47b5ff;
@@ -115,8 +116,12 @@
 </main>
 
 <script type="module">
-import { createPublicClient, http, formatEther } from "https://esm.sh/viem@2.21.0";
-import { base, baseSepolia } from "https://esm.sh/viem@2.21.0/chains";
+// viem is vendored into viem.js rather than pulled from a CDN. This page is
+// the creature's public face and the creature has no server; it should not
+// silently depend on esm.sh being reachable either. Rebuild with:
+//   cd agent && npx esbuild .web-entry.js --bundle --format=esm --minify \
+//     --outfile=../web/viem.js
+import { createPublicClient, http, formatEther, base, baseSepolia } from "./viem.js";
 
 const ABI = [
   {name:"vitals",type:"function",stateMutability:"view",inputs:[],outputs:[
@@ -154,7 +159,10 @@ if(!c0?.tomagachi){
   err("Not deployed yet — pass ?contract=0x… or place deployment.json beside this page.");
 }else{
   const chain=c0.chainId===baseSepolia.id?baseSepolia:base;
-  const client=createPublicClient({chain,transport:http()});
+  // Honour an explicit RPC from deployment.json or ?rpc=: the chain defaults
+  // are public endpoints that rate-limit, and a self-hoster may run their own.
+  const rpcUrl=new URLSearchParams(location.search).get("rpc")||c0.rpc||undefined;
+  const client=createPublicClient({chain,transport:http(rpcUrl)});
   const C={address:c0.tomagachi,abi:ABI};
   const scan=chain.blockExplorers.default.url;
   $("addr").innerHTML=`<a href="${scan}/address/${c0.tomagachi}">${c0.tomagachi}</a>`;
