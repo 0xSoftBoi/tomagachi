@@ -69,6 +69,7 @@ matters, with the market data behind it, is in
 | [`model/`](model/) | SUWA-LM character adapters, SUWA-WM world model |
 | [`web/`](web/) | live vitals page: satiety from Base, P&L from the shop |
 | [`deploy/`](deploy/) | vLLM config, preflight tests, the listing checklist |
+| [`tools/backlog.py`](tools/backlog.py) | the execution graph — what gets built next, and why |
 | [`research/`](research/) | market scans, unit economics, the operating plan |
 
 ## Go live

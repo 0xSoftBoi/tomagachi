@@ -1,0 +1,151 @@
+{
+  "$comment": "The execution graph. One source of truth for what gets built next, so a loop does not have to re-derive priorities every iteration. Edit `status` through tools/backlog.py, not by hand.",
+  "updated": "2026-08-26",
+  "gate": {
+    "name": "Phase 1",
+    "criterion": "$400/wk gross, ten weeks after listing",
+    "source": "research/operating-plan.md"
+  },
+  "nodes": [
+    {
+      "id": "capacity-enforce",
+      "title": "Enforce the capacity we declare",
+      "why": "The manifest promises a requests-per-minute ceiling and nothing enforces it. Past the limit we would queue, and queueing shows up as bad throughput on the public model page. Returning 429 early is tracked apart from uptime.",
+      "needs": [],
+      "verify": "a burst past the declared limit returns 429 with retry-after; under the limit is unaffected; tests cover the window edge",
+      "status": "todo"
+    },
+    {
+      "id": "readiness-probe",
+      "title": "Split liveness from readiness",
+      "why": "/healthz answers 200 even when the GPU behind it is dead, so a router would keep sending traffic into a hole and every one of those is a 5xx against our uptime.",
+      "needs": [],
+      "verify": "/ready fails when upstream is unreachable and recovers when it returns; /healthz stays a pure liveness check",
+      "status": "todo"
+    },
+    {
+      "id": "upstream-retry",
+      "title": "One retry and a circuit breaker on the upstream",
+      "why": "A single dropped connection currently becomes a 502, and 5xx is the error class that costs routing priority. One retry on a transient failure is nearly free; a breaker stops us hammering a GPU that is genuinely down.",
+      "needs": ["readiness-probe"],
+      "verify": "a single transient failure is retried and succeeds; repeated failures open the breaker and return 503 fast rather than hanging",
+      "status": "todo"
+    },
+    {
+      "id": "graceful-drain",
+      "title": "Drain in-flight streams on SIGTERM",
+      "why": "Every redeploy currently cuts live streams mid-token. Mid-stream errors count against uptime, so shipping becomes something we avoid doing.",
+      "needs": [],
+      "verify": "SIGTERM stops accepting new requests, lets in-flight completions finish, then exits; a stream in progress is not truncated",
+      "status": "todo"
+    },
+    {
+      "id": "capture-transcripts",
+      "title": "Capture traffic as training data",
+      "why": "data.py has a `collected` path with no producer, so every adapter trains on the seed corpus. Traffic is the only source of real in-character data we will ever have, and it is being thrown away.",
+      "needs": [],
+      "verify": "opt-in capture writes JSONL per character with prompts redacted per policy; off by default; documented retention; no capture without CAPTURE_TRANSCRIPTS=1",
+      "status": "todo"
+    },
+    {
+      "id": "data-review",
+      "title": "Promote captured transcripts into a training set",
+      "why": "Raw traffic is not a dataset. Something has to filter, dedupe and gate quality before it reaches model/data/<character>.jsonl, or the fleet trains on its own worst output.",
+      "needs": ["capture-transcripts"],
+      "verify": "a CLI reviews captures, applies quality filters, and writes model/data/<id>.jsonl; running the trainer then reports data_source=collected",
+      "status": "todo"
+    },
+    {
+      "id": "eval-multi-turn",
+      "title": "Score consistency across turns, not just one reply",
+      "why": "The current score judges a single reply. What the price premium claims is that the same person is still there forty turns later, and nothing measures that.",
+      "needs": [],
+      "verify": "the eval runs a scripted multi-turn session and scores memory adherence and voice drift; still deterministic and reproducible from the manifest",
+      "status": "todo"
+    },
+    {
+      "id": "eval-gate-release",
+      "title": "Refuse to ship an epoch that got worse",
+      "why": "Warm-starting compounds, which means it also compounds regressions. An epoch that scores below its parent should not be checkpointed on-chain or served.",
+      "needs": ["eval-multi-turn"],
+      "verify": "a regressed epoch exits non-zero and writes no manifest; the previous adapter stays live; the threshold is configurable",
+      "status": "todo"
+    },
+    {
+      "id": "hot-reload-on-epoch",
+      "title": "Serve a new epoch the moment it is trained",
+      "why": "reload-adapter.sh exists but nothing calls it, so a freshly trained epoch sits on disk until someone notices. The compounding story only pays off if what we trained is what we serve.",
+      "needs": ["eval-gate-release"],
+      "verify": "after a successful epoch the brain exports, reloads the adapter into the upstream, and logs it; a failed reload does not fail the epoch",
+      "status": "todo"
+    },
+    {
+      "id": "margin-per-request",
+      "title": "Record cost, not just revenue, per request",
+      "why": "The ledger knows what we charged and nothing about what it cost. Margin per character is what decides which SKUs to keep, and it is currently unknowable.",
+      "needs": [],
+      "verify": "each row carries a GPU-seconds estimate and a derived cost; /metrics reports margin overall and per character",
+      "status": "todo"
+    },
+    {
+      "id": "metrics-history",
+      "title": "Daily rollups so trends are visible",
+      "why": "A 7-day total cannot answer the only question that matters at the gate: is this growing. Ten weeks of flat is a different decision from ten weeks of climbing.",
+      "needs": ["margin-per-request"],
+      "verify": "/metrics returns a daily series; the vitals page sparklines revenue and utilization; rollups survive a restart",
+      "status": "todo"
+    },
+    {
+      "id": "x402-route",
+      "title": "Pay-per-call endpoint that settles on-chain",
+      "why": "The listing route pays by invoice to an entity, which breaks the loop the whole design is about. x402 is the only path where revenue returns to the contract.",
+      "needs": ["capacity-enforce", "margin-per-request"],
+      "verify": "a 402 challenge, payment verification, and a completion served against it; unpaid requests are refused; settlement is recorded in the ledger",
+      "status": "todo"
+    },
+    {
+      "id": "governance-rotation",
+      "title": "Let NOM votes pick what trains next",
+      "why": "Governance is currently decorative: holders vote and the rotation ignores them. The community labour the plan counts on is not free if their votes do nothing.",
+      "needs": ["hot-reload-on-epoch"],
+      "verify": "the brain reads open proposals and orders the rotation by vote weight; falls back to round-robin when there are none",
+      "status": "todo"
+    },
+    {
+      "id": "security-review-serve",
+      "title": "Adversarial pass over the serving path",
+      "why": "The shop takes untrusted input, persists some of it, and injects it back into later prompts. That is three ways to be wrong and none of them have been examined.",
+      "needs": ["capture-transcripts"],
+      "verify": "run the security review over agent/src, fix what it finds, and write down what was accepted and why",
+      "status": "todo"
+    },
+    {
+      "id": "ledger-pii",
+      "title": "Decide and document what we retain",
+      "why": "We tell a router zdr:false because session facts persist. What exactly persists, for how long, and who can read it has never been written down — and it gates ever claiming zdr:true.",
+      "needs": ["security-review-serve"],
+      "verify": "the ledger provably holds no prompt content; retention and deletion documented; a switch that makes zdr:true honest",
+      "status": "todo"
+    }
+  ],
+  "blocked_external": [
+    {
+      "id": "gpu-smoke",
+      "title": "First run on real hardware",
+      "blocker": "needs a rented GPU",
+      "note": "vLLM launch, memory headroom for a 24B in bf16, and how Mistral's chat template interacts with the persona merge. ~$2/hr to answer."
+    },
+    {
+      "id": "teacher-distill",
+      "title": "Bootstrap a real dataset from a teacher",
+      "blocker": "needs an API key for a teacher endpoint",
+      "note": "The --teacher-url path is written but has never run. First thing to do on a machine with a key."
+    },
+    {
+      "id": "provider-apply",
+      "title": "Apply to be listed",
+      "blocker": "needs a public HTTPS endpoint and an entity that can be invoiced",
+      "note": "deploy/openrouter-application.md has the checklist. Nothing here unblocks it."
+    }
+  ]
+}
