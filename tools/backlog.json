@@ -57,7 +57,7 @@
         "capture-transcripts"
       ],
       "verify": "a CLI reviews captures, applies quality filters, and writes model/data/<id>.jsonl; running the trainer then reports data_source=collected",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "eval-multi-turn",

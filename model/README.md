@@ -64,6 +64,21 @@ In order of preference, recorded in the manifest as `data_source`:
    the gitignored `model/data/captured/` with identifiers redacted; a review
    step promotes what is worth keeping into the curated file above. Callers can
    refuse per request with `X-Suwa-No-Capture: 1`, and capture is off by default.
+
+   ```bash
+   python3 suwa_lm/review.py --character suwa-tide --dry-run   # see the verdict
+   python3 suwa_lm/review.py --character suwa-tide             # write the set
+   ```
+
+   The review is a gate, not a converter. It drops replies that broke
+   character — the one thing that must never be learned from, since warm
+   starting compounds it — along with short acknowledgements, runaway replies,
+   near-duplicates, and rows that are mostly redaction placeholders. Every
+   rejection is counted by reason, because a run that keeps 3 of 400 is telling
+   you something about the adapter that silently writing three rows would hide.
+
+   Whether to *publish* a curated set derived from real sessions is a decision,
+   not a default. Nothing here commits one for you.
 2. **distilled** — generated against any OpenAI-compatible teacher with
    `--teacher-url`. How a new SKU bootstraps before it has traffic.
 3. **seed** — a deterministic template corpus built from the character's own
