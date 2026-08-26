@@ -134,7 +134,7 @@
         "capture-transcripts"
       ],
       "verify": "run the security review over agent/src, fix what it finds, and write down what was accepted and why",
-      "status": "doing"
+      "status": "done"
     },
     {
       "id": "ledger-pii",
