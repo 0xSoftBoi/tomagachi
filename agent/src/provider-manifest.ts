@@ -16,6 +16,7 @@
  * Validate before sending anyone the URL: `node deploy/preflight.mjs <base>`.
  */
 import { config } from "./config.js";
+import { zeroDataRetention } from "./retention.js";
 import { catalog, type Character } from "./characters.js";
 
 /** A decimal string, never exponent notation: "0.0000006", not "6e-7". */
@@ -102,8 +103,10 @@ function modelDocument(character: Character, base: string) {
     discount_to_user: 0,
     datacenters: config.datacenters,
     deployment_region: config.deploymentRegion,
-    // zdr is false and must stay false while memory.ts persists session facts.
-    compliance: { zdr: config.complianceZdr, hipaa: false },
+    // Read from what the process actually does, not from a separate promise:
+    // ZERO_DATA_RETENTION=1 is what turns off session memory and capture, and
+    // it is the only thing that can turn this true.
+    compliance: { zdr: zeroDataRetention(), hipaa: false },
   };
 }
 

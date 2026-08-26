@@ -42,7 +42,7 @@ shop, listed in `agent/.env.example`.
 | Auth for the router | `SERVE_API_KEY` | a bearer token you issue and rotate |
 | Datacenter country + region | `DATACENTERS` | ISO 3166-1 alpha-2, e.g. `US:us-east-1`; must be true |
 | Deployment region label | `DEPLOYMENT_REGION` | display only; coordinate the vocabulary before publishing |
-| Zero data retention claim | `COMPLIANCE_ZDR` | **leave off** while session memory persists to disk |
+| Zero data retention | `ZERO_DATA_RETENTION` | turns session memory and capture off; the manifest reads the switch, so the claim cannot be made without it — see `agent/RETENTION.md` |
 | Declared capacity | `CAPACITY_REQUESTS_PER_MINUTE` | under-declare and get 429s; over-declare and get timeouts |
 | Quantization served | `SERVED_QUANTIZATION` | must match how vLLM was launched |
 | Price per character | `model/characters.json` | entry price is $0.60/$1.20 per M — see the plan |

@@ -104,6 +104,9 @@ test("nothing is live by default", () => {
 });
 
 test("zero data retention is not claimed while session memory persists", () => {
+  // This process runs without ZERO_DATA_RETENTION, so memory.ts and capture.ts
+  // are both live and the honest answer is no. test/zdr.test.ts is the other
+  // half: with the switch on, both are off and the answer flips.
   for (const doc of docs) {
     assert.equal(doc.compliance.zdr, false,
       `${doc.id} claims zdr — memory.ts writes session facts to disk, so that would be false`);

@@ -144,7 +144,7 @@
         "security-review-serve"
       ],
       "verify": "the ledger provably holds no prompt content; retention and deletion documented; a switch that makes zdr:true honest",
-      "status": "todo"
+      "status": "doing"
     }
   ],
   "blocked_external": [

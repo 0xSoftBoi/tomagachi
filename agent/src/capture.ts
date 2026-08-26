@@ -82,7 +82,9 @@ export interface CaptureInput {
  * expected outcome most of the time, since this is off by default.
  */
 export function capture(input: CaptureInput): CaptureRow | null {
-  if (!config.captureTranscripts) return null;
+  // Two switches, both of which must allow it. ZDR is the stronger claim and
+  // overrides a capture flag left on from an earlier deployment.
+  if (config.zeroDataRetention || !config.captureTranscripts) return null;
   if (input.refused) return null;
   if (!input.completion.trim()) return null; // an empty reply teaches nothing
 

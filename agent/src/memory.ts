@@ -140,6 +140,10 @@ export function extract(text: string): string[] {
 }
 
 export function remember(sessionId: string, messages: { role: string; content: string }[]): void {
+  // Under zero data retention there is no store at all -- not an empty one, not
+  // an in-memory one. A "fact" here is a sentence the customer typed, so the
+  // only honest implementation of the claim is not to have it.
+  if (config.zeroDataRetention) return;
   load();
   // Only the newest user turn: earlier ones were seen on the calls that carried them.
   const latest = [...messages].reverse().find((m) => m.role === "user");
@@ -182,16 +186,22 @@ function evict(): void {
 
 /** Sessions currently held — reported by /metrics so the bound is observable. */
 export function sessionCount(): number {
+  if (config.zeroDataRetention) return 0;
   load();
   return sessions.size;
 }
 
 export function recall(sessionId: string): string[] {
+  if (config.zeroDataRetention) return [];
   load();
   return sessions.get(sessionId)?.facts ?? [];
 }
 
-export function forget(sessionId: string): void {
+/** Erase one session. Returns whether there was anything to erase. */
+export function forget(sessionId: string): boolean {
+  if (config.zeroDataRetention) return false;
   load();
-  if (sessions.delete(sessionId)) persist();
+  if (!sessions.delete(sessionId)) return false;
+  persist();
+  return true;
 }

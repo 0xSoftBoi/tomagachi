@@ -25,7 +25,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { config } from "./config.js";
 import { catalog, findCharacter, type Character } from "./characters.js";
 import { daily, metrics, priceOf, record } from "./usage.js";
-import { MEMORY_BLOCK_MAX_CHARS, recall, remember, sessionCount } from "./memory.js";
+import { MEMORY_BLOCK_MAX_CHARS, forget, recall, remember, sessionCount } from "./memory.js";
 import { providerManifest } from "./provider-manifest.js";
 import { SseTally } from "./stream.js";
 import { RateLimiter } from "./ratelimit.js";
@@ -506,6 +506,19 @@ export function startServer(): void {
     }
     if (!authorized(req)) return fail(res, 401, "missing or invalid bearer token", "authentication_error");
     if (path === "/v1/models" && req.method === "GET") return handleModels(res);
+
+    // Erasure, for the one thing we keep that is about a person. The session
+    // key is derived from the caller's own principal exactly as it is on the
+    // serving path, so this deletes your memory and can never delete anyone
+    // else's -- no confirmation step, no ticket, no waiting on an operator.
+    if (path === "/v1/sessions" && req.method === "DELETE") {
+      const url2 = new URL(req.url ?? "/", "http://localhost");
+      const id = sessionId(req, { user: url2.searchParams.get("user") ?? undefined } as ChatRequest);
+      if (!id) {
+        return fail(res, 400, "send the session as X-Suwa-Session or ?user=, the same way you sent it to chat");
+      }
+      return json(res, 200, { deleted: forget(id) });
+    }
 
     if (path === "/v1/chat/completions" && req.method === "POST") {
       let raw = "";

@@ -164,10 +164,19 @@ export const config = {
   }),
   deploymentRegion: process.env.DEPLOYMENT_REGION ?? "US",
   /**
-   * Zero data retention. Keep false while memory.ts persists session facts —
-   * claiming zdr with a session store on disk would be a false statement.
+   * Zero data retention, as a mode rather than a claim.
+   *
+   * There used to be a COMPLIANCE_ZDR flag here that only changed what the
+   * manifest said. A flag that changes the advertisement and not the behaviour
+   * is worse than no flag: it is a false statement to a router, made one
+   * environment variable at a time. This switch turns off everything that
+   * writes customer text to disk — session memory and transcript capture —
+   * and the manifest reads the switch rather than a separate promise.
+   *
+   * The revenue ledger keeps running either way. It holds token counts and no
+   * text; see agent/RETENTION.md for the line-by-line argument.
    */
-  complianceZdr: process.env.COMPLIANCE_ZDR === "1",
+  zeroDataRetention: process.env.ZERO_DATA_RETENTION === "1",
 
   /** How many days of history /metrics reports, and how far back rows stay in memory. */
   historyDays: Number(process.env.HISTORY_DAYS ?? 28),

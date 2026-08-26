@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { config } from "./config.js";
 import type { Character } from "./characters.js";
 import { gpuSeconds, marginPct, marginalCost } from "./cost.js";
+import { sanitizeApp } from "./retention.js";
 
 export interface UsageRow {
   at: string;
@@ -65,14 +66,22 @@ export function record(
   character: Character
 ): UsageRow {
   load();
+  // Built field by field, never spread. A spread writes whatever it is handed,
+  // which is how a message or a header ends up in a file we tell routers holds
+  // nothing but counts. The shape of a ledger row is decided here and nowhere
+  // else -- see retention.ts and agent/RETENTION.md.
   const full: UsageRow = {
     at: new Date().toISOString(),
+    character: row.character,
+    app: sanitizeApp(row.app ?? ""),
+    promptTokens: Math.max(0, Math.round(Number(row.promptTokens) || 0)),
+    completionTokens: Math.max(0, Math.round(Number(row.completionTokens) || 0)),
     revenueUsd: priceOf(character, row.promptTokens, row.completionTokens),
     // Stored rather than derived at read time, so a later price or hardware
     // change does not silently rewrite what past requests appeared to cost.
     gpuSeconds: round(gpuSeconds(row.promptTokens, row.completionTokens), 6),
     costUsd: marginalCost(row.promptTokens, row.completionTokens),
-    ...row,
+    latencyMs: Math.max(0, Math.round(Number(row.latencyMs) || 0)),
   };
   rows.push(full);
   mkdirSync(config.stateDir, { recursive: true });
