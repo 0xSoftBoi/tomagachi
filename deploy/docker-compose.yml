@@ -73,6 +73,9 @@ services:
       - ../model:/app/model:ro      # the catalog: one definition per SKU
     ports:
       - "8080:8080"
+    # Must exceed PRE_DRAIN_MS + DRAIN_TIMEOUT_MS, or Docker SIGKILLs the shop
+    # mid-stream and the drain buys nothing.
+    stop_grace_period: 40s
     healthcheck:
       # readiness, not liveness: an unready shop should stop receiving traffic
       test: ["CMD", "node", "-e", "fetch('http://localhost:8080/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

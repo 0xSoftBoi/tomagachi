@@ -30,6 +30,7 @@ import { SseTally } from "./stream.js";
 import { RateLimiter } from "./ratelimit.js";
 import { UpstreamHealth, httpProbe } from "./health.js";
 import { BreakerOpenError, CircuitBreaker, withRetry } from "./resilience.js";
+import { Lifecycle } from "./lifecycle.js";
 
 interface ChatMessage {
   role: string;
@@ -46,6 +47,9 @@ interface ChatRequest {
 
 /** The declared ceiling, enforced. Shared, because the GPU is. */
 const limiter = new RateLimiter(config.capacityRequestsPerMinute);
+
+/** In-flight accounting, so a redeploy does not cut anyone off mid-token. */
+const lifecycle = new Lifecycle();
 
 /** Opens after repeated upstream failures so we stop hammering a dead GPU. */
 const breaker = new CircuitBreaker(config.breakerThreshold, config.breakerCooldownMs);
@@ -328,6 +332,14 @@ export function startServer(): void {
     // Readiness: we can actually serve. 503 here keeps a router from sending
     // requests that would come back 5xx and count against uptime.
     if (path === "/ready") {
+      if (lifecycle.isDraining) {
+        return json(res, 503, {
+          ready: false,
+          detail: `draining — ${lifecycle.active} request(s) still in flight`,
+          breaker: breaker.state,
+          checkedAt: new Date().toISOString(),
+        });
+      }
       return health.status().then((r) => {
         // An open breaker means we are refusing to attempt requests. Reporting
         // ready while doing that would be a lie the router pays for.
@@ -364,11 +376,19 @@ export function startServer(): void {
         }
       });
       req.on("end", () => {
-        handleChat(req, res, raw).catch((e) => {
-          console.error(`[serve] ${e.stack ?? e}`);
-          if (!res.headersSent) fail(res, 500, "internal error", "server_error");
-          else res.end();
-        });
+        // A request that arrives after the drain started belongs to whoever is
+        // taking over, not to a process that is about to exit.
+        if (!lifecycle.enter()) {
+          res.setHeader("retry-after", "5");
+          return fail(res, 503, "shutting down — retry against another instance", "upstream_error");
+        }
+        handleChat(req, res, raw)
+          .catch((e) => {
+            console.error(`[serve] ${e.stack ?? e}`);
+            if (!res.headersSent) fail(res, 500, "internal error", "server_error");
+            else res.end();
+          })
+          .finally(() => lifecycle.exit());
       });
       return;
     }
@@ -383,4 +403,34 @@ export function startServer(): void {
         `http://${config.serveHost}:${config.servePort}/v1 → upstream ${config.upstreamBaseUrl}`
     );
   });
+
+  let shuttingDown = false;
+  const drain = async (signal: string) => {
+    if (shuttingDown) return; // a second signal should not race the first
+    shuttingDown = true;
+
+    // 1. Stop being routed to. 2. Stop accepting. 3. Finish what is running.
+    lifecycle.beginDrain();
+    console.log(`[serve] ${signal} — draining ${lifecycle.active} in-flight request(s)`);
+
+    // Lame duck: keep the listener open briefly while /ready reports 503, so a
+    // load balancer can deregister us on a clean answer. Closing immediately
+    // makes every probe and every new request a connection refusal instead,
+    // which is indistinguishable from a crash from the outside.
+    if (config.preDrainMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, config.preDrainMs));
+    }
+    server.close();
+
+    const clean = await lifecycle.whenIdle(config.drainTimeoutMs);
+    console.log(
+      clean
+        ? "[serve] drained cleanly"
+        : `[serve] drain timed out with ${lifecycle.active} still in flight`
+    );
+    process.exit(clean ? 0 : 1);
+  };
+
+  process.on("SIGTERM", () => void drain("SIGTERM"));
+  process.on("SIGINT", () => void drain("SIGINT"));
 }

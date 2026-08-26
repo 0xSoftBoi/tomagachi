@@ -142,4 +142,9 @@ That boolean is the gate, and `weeksOfRunway` is what is left if it does not.
 - **Point the load balancer at `/ready`, not `/healthz`.** Liveness answering
   200 over a dead GPU is how every routed request becomes a 5xx. `/healthz` is
   for the process supervisor; `/ready` is for anything deciding where traffic goes.
+- **Give shutdown room.** SIGTERM starts a lame-duck window where `/ready`
+  answers 503 while the listener stays open, so a balancer deregisters on an
+  answer rather than a refused connection; then in-flight streams finish before
+  the process exits. Whatever supervises the shop must allow more than
+  `PRE_DRAIN_MS + DRAIN_TIMEOUT_MS` before SIGKILL — the compose file allows 40s.
 - **Stream immediately.** TTFT is public. Send tokens as they arrive.

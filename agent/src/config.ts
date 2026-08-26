@@ -104,6 +104,13 @@ export const config = {
   /** Consecutive upstream failures before we stop attempting at all. */
   breakerThreshold: Number(process.env.BREAKER_THRESHOLD ?? 5),
   breakerCooldownMs: Number(process.env.BREAKER_COOLDOWN_MS ?? 10_000),
+  /** How long a shutdown waits for in-flight completions before giving up on them. */
+  drainTimeoutMs: Number(process.env.DRAIN_TIMEOUT_MS ?? 30_000),
+  /**
+   * Lame-duck window: keep listening while /ready reports 503, so a balancer
+   * deregisters on an answer rather than on a refused connection.
+   */
+  preDrainMs: Number(process.env.PRE_DRAIN_MS ?? 3_000),
 
   /** The GPU underneath: any OpenAI-compatible server (vLLM with one LoRA per SKU). */
   upstreamBaseUrl: process.env.UPSTREAM_BASE_URL ?? "http://localhost:8000/v1",

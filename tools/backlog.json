@@ -39,7 +39,7 @@
       "why": "Every redeploy currently cuts live streams mid-token. Mid-stream errors count against uptime, so shipping becomes something we avoid doing.",
       "needs": [],
       "verify": "SIGTERM stops accepting new requests, lets in-flight completions finish, then exits; a stream in progress is not truncated",
-      "status": "todo"
+      "status": "done"
     },
     {
       "id": "capture-transcripts",
