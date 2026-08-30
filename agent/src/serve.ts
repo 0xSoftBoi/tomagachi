@@ -26,6 +26,12 @@ import { catalog, findCharacter, type Character } from "./characters.js";
 import { metrics, record } from "./usage.js";
 import { recall, remember } from "./memory.js";
 import { providerManifest } from "./provider-manifest.js";
+import {
+  x402Available,
+  paymentRequirements,
+  settlePayment,
+  paymentResponseHeader,
+} from "./x402.js";
 
 interface ChatMessage {
   role: string;
@@ -281,6 +287,35 @@ function authorized(req: IncomingMessage): boolean {
   return header === `Bearer ${config.serveApiKey}`;
 }
 
+/** A configured bearer key presented and correct — the invoiced-router path. */
+function hasBearer(req: IncomingMessage): boolean {
+  return Boolean(config.serveApiKey) && req.headers.authorization === `Bearer ${config.serveApiKey}`;
+}
+
+/**
+ * The x402 gate for /v1/chat/completions. Routers with a bearer key pass;
+ * anyone else pays per call: no X-PAYMENT gets the 402 challenge, a valid
+ * one is settled on-chain before we spend GPU time on the request.
+ * Returns true if the request may proceed.
+ */
+async function settleOrChallenge(req: IncomingMessage, res: ServerResponse, resource: string): Promise<boolean> {
+  if (!x402Available() || hasBearer(req)) return true;
+
+  const raw = req.headers["x-payment"];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  if (!header) {
+    json(res, 402, paymentRequirements(resource));
+    return false;
+  }
+  const settled = await settlePayment(header);
+  if (!settled.ok) {
+    json(res, 402, { ...paymentRequirements(resource), error: settled.reason });
+    return false;
+  }
+  res.setHeader("x-payment-response", paymentResponseHeader(settled));
+  return true;
+}
+
 export function startServer(): void {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -292,10 +327,14 @@ export function startServer(): void {
     if (path === "/provider/models" && req.method === "GET") {
       return json(res, 200, providerManifest());
     }
-    if (!authorized(req)) return fail(res, 401, "missing or invalid bearer token", "authentication_error");
+    const isChat = path === "/v1/chat/completions" && req.method === "POST";
+    // x402 makes chat reachable without a bearer — payment IS the auth there.
+    if (!authorized(req) && !(isChat && x402Available())) {
+      return fail(res, 401, "missing or invalid bearer token", "authentication_error");
+    }
     if (path === "/v1/models" && req.method === "GET") return handleModels(res);
 
-    if (path === "/v1/chat/completions" && req.method === "POST") {
+    if (isChat) {
       let raw = "";
       req.on("data", (c) => {
         raw += c;
@@ -305,7 +344,10 @@ export function startServer(): void {
         }
       });
       req.on("end", () => {
-        handleChat(req, res, raw).catch((e) => {
+        (async () => {
+          if (!(await settleOrChallenge(req, res, url.toString()))) return;
+          await handleChat(req, res, raw);
+        })().catch((e) => {
           console.error(`[serve] ${e.stack ?? e}`);
           if (!res.headersSent) fail(res, 500, "internal error", "server_error");
           else res.end();

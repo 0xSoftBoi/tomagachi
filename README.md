@@ -1,7 +1,8 @@
 # Suwappu Tomagachi
 
-> An on-chain creature that eats stablecoins, buys compute, trains **character
-> models**, and sells them back to the world to feed itself.
+> An on-chain creature that eats stablecoins, farms its idle treasury for
+> **real yield**, buys compute, trains **character models**, and sells them
+> back to the world to feed itself.
 
 Built on [Suwappu](https://suwappu.bot) — the cross-chain DeFi API for AI
 agents. The creature lives as a contract on **Base**; its brain is an
@@ -37,8 +38,23 @@ autonomous agent that turns every token you feed it into training compute.
   buys GPU time with `buyCompute(to, amount, provider, jobRef)` — every cent
   leaving the creature is an on-chain, auditable record.
 - **It earns.** What it trains, it sells: the shop (`agent/src/serve.ts`) is an
-  OpenAI-compatible endpoint any app can call, priced per character. Revenue is
-  food, so a creature with customers stops starving.
+  OpenAI-compatible endpoint any app can call, priced per character. Keyless
+  callers pay per request with **x402** — HTTP 402, a signed EIP-3009 USDC
+  authorization, settled on Base before the tokens stream — and the brain
+  passes settled revenue to the contract via `earn()`: satiety up, zero NOM.
+  Revenue is food, so a creature with customers stops starving.
+- **It farms.** Idle USDC doesn't nap in the belly — the brain parks it across
+  owner-whitelisted **ERC-4626 vaults** (money markets, tokenized T-bill funds,
+  RWA vaults) via `invest`/`divest`/`harvest`, sampling each vault's share
+  price for trailing APY, allocating to the best and rebalancing when the
+  spread pays for the gas. Principal stays recallable compute budget;
+  harvested yield raises satiety and mints **no** NOM — it's food the creature
+  earned itself. A starved creature with a farm can literally wake itself from
+  hibernation on its own yield.
+- **It hangs out.** A dependency-free Telegram front-end
+  (`agent/src/telegram.ts`) answers `/vitals`, `/treasury` and `/feed` in the
+  community chat and broadcasts the drama as it happens on-chain: mood swings,
+  harvests, trained epochs, revenue meals.
 - **It learns in public.** Each training epoch ends with
   `checkpoint(epoch, sha256, uri, loss, spent)` on-chain. Anyone can
   `sha256sum` the released weights against the chain.
@@ -64,8 +80,11 @@ matters, with the market data behind it, is in
 | path | what |
 |---|---|
 | [`contracts/Tomagachi.sol`](contracts/Tomagachi.sol) | the creature + NOM token (self-contained, no deps) |
-| [`agent/`](agent/) | the brain: Suwappu swaps, compute brokerage, on-chain ops |
+| [`agent/`](agent/) | the brain: Suwappu swaps, compute brokerage, treasury farming, on-chain ops |
 | [`agent/src/serve.ts`](agent/src/serve.ts) | the shop: OpenAI-compatible endpoint, pricing, usage ledger |
+| [`agent/src/x402.ts`](agent/src/x402.ts) | pay-per-call: 402 challenge, EIP-3009 settlement, revenue ledger |
+| [`agent/src/telegram.ts`](agent/src/telegram.ts) | the community chat front-end (commands + broadcasts) |
+| [`agent/test/`](agent/test/) | EVM test suite: feeding, decay, farming, earning, governance |
 | [`model/`](model/) | SUWA-LM character adapters, SUWA-WM world model |
 | [`web/`](web/) | live vitals page (static, reads Base directly) |
 | [`deploy/`](deploy/) | vLLM config, preflight tests, the listing checklist |
@@ -74,10 +93,15 @@ matters, with the market data behind it, is in
 ## Go live
 
 ```bash
-# 1. contracts — compile (solc-js, no Foundry needed) and deploy to Base
+# 0. tests — the whole metabolism runs against an in-process EVM
 cd agent && npm install
+npm test                                   # feed, starve, farm, harvest, earn, vote
+
+# 1. contracts — compile (solc-js, no Foundry needed) and deploy to Base
 npm run compile
-DEPLOYER_KEY=0x... npm run deploy          # writes agent/deployment.json
+DEPLOYER_KEY=0x... YIELD_VAULTS=0x...,0x... npm run deploy   # writes agent/deployment.json
+# YIELD_VAULTS whitelists ERC-4626 USDC vaults for the treasury; keep the
+# same list in .env so the brain farms them (best trailing APY wins).
 
 # 2. brain — feed it env vars and let it run
 cp .env.example .env                       # fill in OPERATOR_KEY etc.
@@ -109,7 +133,15 @@ creature starts paying for its own GPUs on-chain.
 - Feeding is a **contribution, not an investment**. NOM is contribution
   credit and governance weight; it has no claim on funds.
 - The creature's USDC can only exit via `buyCompute` (operator-only,
-  awake-only, fully logged). Metabolism burns appetite, never money.
+  awake-only, fully logged) or move into owner-whitelisted ERC-4626 vaults —
+  where it remains the creature's, recallable via `divest`, position readable
+  by anyone via `treasury()`. Metabolism burns appetite, never money.
+- **Real yield and revenue go to the creature, not to holders.** Harvested
+  vault yield and x402 revenue become satiety and compute budget via
+  `harvest()`/`earn()` — both mint zero NOM. They are deliberately NOT routed
+  to the token — the moment NOM carries a claim on earnings, its legal
+  character changes. If you want that, get counsel first; the contract makes
+  the safe thing the default.
 - The product is the **open model**: every stablecoin fed becomes public,
   verifiable weights — on a 90-day lag, so releasing them doesn't hand the
   revenue to whichever host picks them up first.
@@ -125,11 +157,13 @@ creature starts paying for its own GPUs on-chain.
 ## Roadmap
 
 - [x] Character adapters, an eval score per release, and the shop that sells them
+- [x] Real-yield treasury: multi-vault ERC-4626 farming, best APY wins, harvests are food
+- [x] x402 pay-per-call inference — revenue settles on Base and is eaten via `earn()`
+- [x] Telegram front-end: feed & check vitals in chat, on-chain drama broadcast live
+- [x] An EVM test suite (`agent/test/`) covering the whole metabolism
 - [ ] Get listed: apply as a provider, first traffic, first dollar
 - [ ] Memory layer v2 — summarize sessions on the same GPU that serves them
 - [ ] Adapters for specific decentralized GPU markets (Akash, io.net, Nosana)
-- [ ] x402 pay-per-call inference, so revenue can settle back to the contract
-- [ ] Telegram front-end via the Suwappu bot: feed & check vitals in chat
 - [ ] Scale the Reef by governance vote — the dream, when the shop can pay for it
 
 MIT (code) / Apache-2.0 (model weights).

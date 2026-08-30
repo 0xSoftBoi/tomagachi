@@ -15,14 +15,33 @@ pragma solidity ^0.8.24;
 ///   emits an auditable record of every payment to a compute provider.
 /// - Every training run ends with an on-chain `checkpoint`: epoch, model
 ///   weights hash, artifact URI, and loss. The model itself is open source.
+/// - Idle USDC is farmed: the operator parks it in owner-whitelisted ERC-4626
+///   vaults (money markets, tokenized T-bills, RWA vaults) and harvests the
+///   real yield as food. Principal stays recallable compute budget; yield
+///   raises satiety and mints no NOM — the creature earns its own keep.
+/// - Revenue the shop earns (x402 pay-per-call inference) is eaten through
+///   `earn()`: satiety up, zero NOM — customers are not contributors.
 /// - NOM holders steer the creature: propose and vote on training directions.
 /// ----------------------------------------------------------------------------
 
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
     function balanceOf(address account) external view returns (uint256);
     function decimals() external view returns (uint8);
+}
+
+/// @notice The slice of ERC-4626 the creature needs to farm its idle USDC.
+/// Any standard vault qualifies: money markets (Aave/Morpho/Moonwell wrappers),
+/// tokenized T-bill funds, RWA/tokenized-equity vaults — as long as it is
+/// USDC-denominated and 4626-shaped, the owner can whitelist it.
+interface IERC4626 {
+    function asset() external view returns (address);
+    function deposit(uint256 assets, address receiver) external returns (uint256 shares);
+    function withdraw(uint256 assets, address receiver, address owner) external returns (uint256 shares);
+    function convertToAssets(uint256 shares) external view returns (uint256 assets);
+    function balanceOf(address account) external view returns (uint256);
 }
 
 /// @notice NOM — non-financial contribution credit, minted 1 NOM per 1 USDC fed.
@@ -118,7 +137,10 @@ contract Tomagachi {
 
     uint256 public totalFed;
     uint256 public totalComputeSpent;
+    uint256 public totalRevenueEarned;    // lifetime inference revenue eaten via earn()
     mapping(address => uint256) public fedBy;
+    address[] public feeders;             // every unique contributor, in order of first feed
+    string public lastWords;              // the creature's most recent speech
 
     struct ComputePurchase {
         uint64 time;
@@ -128,6 +150,22 @@ contract Tomagachi {
         string jobRef;
     }
     ComputePurchase[] public purchases;
+
+    // -------------------------------------------------------------- treasury
+    //
+    // Real yield: idle USDC does not sit in the belly losing time value — the
+    // operator parks it in owner-whitelisted ERC-4626 vaults. Principal stays
+    // the creature's compute budget (recall it any time with divest); anything
+    // the vault earns ABOVE principal is harvested as food the creature earned
+    // for itself. Harvested yield raises satiety and mints no NOM: nobody
+    // contributed it, the creature farmed it.
+
+    mapping(address => bool) public allowedVault;
+    mapping(address => bool) internal listedVault;  // ever pushed to vaultList
+    mapping(address => uint256) public principalOf; // USDC principal per vault
+    address[] public vaultList;                     // every vault ever whitelisted
+    uint256 public totalInvested;                   // sum of live principals
+    uint256 public totalYieldEarned;                // lifetime harvested yield
 
     struct Checkpoint {
         uint64 time;
@@ -157,6 +195,11 @@ contract Tomagachi {
     // ----------------------------------------------------------------- events
 
     event Fed(address indexed contributor, uint256 amount, uint256 newSatiety);
+    event VaultAllowed(address indexed vault, bool allowed);
+    event Invested(address indexed vault, uint256 amount);
+    event Divested(address indexed vault, uint256 amount);
+    event Harvested(address indexed vault, uint256 yieldAmount, uint256 newSatiety);
+    event Earned(string source, uint256 amount, uint256 newSatiety);
     event Hatched(uint64 time);
     event ComputeBought(uint256 indexed id, address indexed to, uint256 amount, string provider, string jobRef);
     event Checkpointed(uint64 indexed epoch, bytes32 modelHash, string uri, uint256 lossMilli);
@@ -250,6 +293,7 @@ contract Tomagachi {
         if (satietyStored > maxSatiety) satietyStored = maxSatiety;
 
         totalFed += amount;
+        if (fedBy[contributor] == 0) feeders.push(contributor);
         fedBy[contributor] += amount;
 
         // 1 USDC (6dp) => 1 NOM (18dp)
@@ -300,7 +344,106 @@ contract Tomagachi {
 
     /// @notice The creature speaks (the brain relays its words on-chain).
     function speak(string calldata words) external onlyOperator {
+        lastWords = words;
         emit Spoke(words);
+    }
+
+    /// @notice Eat what the creature earned: inference revenue (x402 pay-per-
+    /// call, invoiced routing) settled to the operating wallet and passed in.
+    /// Like harvest, earnings raise satiety and mint NO NOM — customers are
+    /// not contributors, and NOM stays strictly non-revenue-bearing.
+    function earn(uint256 amount, string calldata source) external onlyOperator {
+        require(amount > 0, "earn: zero");
+        require(stable.transferFrom(msg.sender, address(this), amount), "earn: transfer");
+
+        totalRevenueEarned += amount;
+        _metabolize();
+        satietyStored += amount;
+        if (satietyStored > maxSatiety) satietyStored = maxSatiety;
+        emit Earned(source, amount, satietyStored);
+    }
+
+    // -------------------------------------------------------------- treasury
+
+    /// @notice Whitelist (or delist) a USDC-denominated ERC-4626 vault the
+    /// operator may farm. Delisting blocks new deposits; existing positions
+    /// can always be divested and harvested.
+    function allowVault(address vault, bool allowed) external onlyOwner {
+        if (allowed) {
+            require(IERC4626(vault).asset() == address(stable), "vault: wrong asset");
+            if (!listedVault[vault]) {
+                listedVault[vault] = true;
+                vaultList.push(vault);
+            }
+        }
+        allowedVault[vault] = allowed;
+        emit VaultAllowed(vault, allowed);
+    }
+
+    /// @notice Park idle USDC in a whitelisted vault. Not spending — principal
+    /// stays the creature's and is recallable via `divest` at any time — so
+    /// unlike `buyCompute` this works even while hibernating.
+    function invest(address vault, uint256 amount) external onlyOperator {
+        require(allowedVault[vault], "invest: vault not allowed");
+        require(amount > 0 && amount <= stable.balanceOf(address(this)), "invest: bad amount");
+
+        principalOf[vault] += amount;
+        totalInvested += amount;
+
+        require(stable.approve(vault, amount), "invest: approve");
+        IERC4626(vault).deposit(amount, address(this));
+        emit Invested(vault, amount);
+    }
+
+    /// @notice Recall principal from a vault back into liquid compute budget.
+    /// Harvest first if there is pending yield, so it is counted as earnings
+    /// rather than blended silently into principal.
+    function divest(address vault, uint256 amount) external onlyOperator {
+        uint256 p = principalOf[vault];
+        require(amount > 0 && amount <= p, "divest: bad amount");
+
+        principalOf[vault] = p - amount;
+        totalInvested -= amount;
+
+        IERC4626(vault).withdraw(amount, address(this), address(this));
+        emit Divested(vault, amount);
+    }
+
+    /// @notice Withdraw everything a vault has earned above principal. The
+    /// yield lands as liquid USDC (more compute budget) AND counts as food:
+    /// satiety rises, no NOM is minted — the creature earned this itself.
+    function harvest(address vault) external onlyOperator returns (uint256 yieldAmount) {
+        uint256 value = IERC4626(vault).convertToAssets(IERC4626(vault).balanceOf(address(this)));
+        uint256 p = principalOf[vault];
+        require(value > p, "harvest: nothing to harvest");
+        yieldAmount = value - p;
+
+        totalYieldEarned += yieldAmount;
+        IERC4626(vault).withdraw(yieldAmount, address(this), address(this));
+
+        _metabolize();
+        satietyStored += yieldAmount;
+        if (satietyStored > maxSatiety) satietyStored = maxSatiety;
+        emit Harvested(vault, yieldAmount, satietyStored);
+    }
+
+    /// @notice Current value of every vault position, marked by the vaults.
+    function investedAssets() public view returns (uint256 total) {
+        for (uint256 i = 0; i < vaultList.length; i++) {
+            IERC4626 v = IERC4626(vaultList[i]);
+            uint256 shares = v.balanceOf(address(this));
+            if (shares > 0) total += v.convertToAssets(shares);
+        }
+    }
+
+    /// @notice The whole balance sheet in one read: liquid compute budget,
+    /// invested value, principal at risk, and lifetime harvested yield.
+    function treasury()
+        external
+        view
+        returns (uint256 liquid, uint256 invested, uint256 principal, uint256 yieldEarned)
+    {
+        return (energy(), investedAssets(), totalInvested, totalYieldEarned);
     }
 
     // ------------------------------------------------------------ governance
@@ -347,6 +490,14 @@ contract Tomagachi {
 
     function purchaseCount() external view returns (uint256) {
         return purchases.length;
+    }
+
+    function vaultCount() external view returns (uint256) {
+        return vaultList.length;
+    }
+
+    function feederCount() external view returns (uint256) {
+        return feeders.length;
     }
 
     function checkpointCount() external view returns (uint256) {

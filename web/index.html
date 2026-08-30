@@ -27,6 +27,7 @@
   .creature.hibernating { animation: none; filter: grayscale(.8) brightness(.6); }
   @keyframes bob { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-10px) } }
   .speech { margin-top: .8rem; font-size: .85rem; color: var(--accent); min-height: 1.2em; }
+  .countdown { margin-top: 1rem; font-size: .78rem; letter-spacing: .08em; opacity: .85; min-height: 1.1em; }
   .mood { margin-top: .3rem; font-size: .75rem; letter-spacing: .2em; opacity: .8; }
   .bars { margin-top: 1.4rem; display: grid; gap: .6rem; text-align: left; }
   .bar label { font-size: .7rem; letter-spacing: .15em; opacity: .75; }
@@ -53,10 +54,11 @@
 <main>
   <h1>Suwappu Tomagachi</h1>
   <p class="sub">
-    An on-chain creature on Base. It eats stablecoins, buys decentralized
-    compute, and trains <a href="https://github.com/0xSoftBoi/tomagachi">SUWA-WM</a>,
-    an open-source world model, for everyone. Feeding mints NOM — your vote on
-    what it learns next.
+    An on-chain creature on Base. It eats stablecoins, farms its idle treasury
+    for <b>real DeFi yield</b>, buys decentralized compute, trains
+    <a href="https://github.com/0xSoftBoi/tomagachi">open character models</a>,
+    and sells them pay-per-call (x402) — revenue and yield are food it earns
+    itself. Feeding mints NOM — your vote on what it learns next.
   </p>
 
   <div class="tank">
@@ -67,10 +69,17 @@
       <div class="bar"><label>SATIETY</label><div class="track"><div class="fill" id="satiety" style="width:0%"></div></div></div>
       <div class="bar energy"><label>ENERGY (compute budget)</label><div class="track"><div class="fill" id="energy" style="width:0%"></div></div></div>
     </div>
+    <div class="countdown" id="countdown"></div>
     <div class="stats">
       <div class="stat"><b id="fed">–</b><span>USDC fed</span></div>
       <div class="stat"><b id="spent">–</b><span>USDC → compute</span></div>
       <div class="stat"><b id="epochs">–</b><span>epochs trained</span></div>
+      <div class="stat"><b id="liquid">–</b><span>USDC liquid</span></div>
+      <div class="stat"><b id="farming">–</b><span>USDC farming</span></div>
+      <div class="stat"><b id="yield">–</b><span>yield eaten</span></div>
+      <div class="stat"><b id="revenue">–</b><span>revenue eaten</span></div>
+      <div class="stat"><b id="feeders">–</b><span>feeders</span></div>
+      <div class="stat"><b id="nomsupply">–</b><span>NOM minted</span></div>
     </div>
   </div>
 
@@ -79,10 +88,24 @@
     <div class="feedbox" id="feedbox">
       1. Approve USDC to the creature, then call <code>feed(amount)</code> on
       <span class="addr" id="addr">…</span><br />
-      2. Or send any Base token to the brain wallet — it swaps to USDC via
-      <a href="https://suwappu.bot">Suwappu</a> and feeds itself.<br />
-      3. Every USDC fed mints 1 NOM: propose &amp; vote on training directions.
+      2. Or send any Base token — yes, your memecoin — to the brain wallet; it
+      swaps to USDC via <a href="https://suwappu.bot">Suwappu</a> and feeds itself.<br />
+      3. Every USDC fed mints 1 NOM: propose &amp; vote on training directions.<br />
+      4. Idle USDC is farmed across ERC-4626 vaults, best APY wins. Harvested
+      yield feeds the creature — real yield, on-chain, and it can even wake
+      itself from hibernation with it.<br />
+      5. Or just <em>buy inference</em>: keyless API calls get an HTTP 402 —
+      sign a USDC payment (x402), the request is served, and the revenue is
+      eaten as food. Customers keep it alive too.
     </div>
+  </section>
+
+  <section>
+    <h2>Top feeders</h2>
+    <table>
+      <thead><tr><th>#</th><th>wallet</th><th>fed</th><th>share</th></tr></thead>
+      <tbody id="leaderboard"><tr><td colspan="4">loading…</td></tr></tbody>
+    </table>
   </section>
 
   <section>
@@ -106,9 +129,22 @@ const ABI = [
     { name: "fed", type: "uint256" }, { name: "spent", type: "uint256" }, { name: "epochs", type: "uint256" }] },
   { name: "maxSatiety", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { name: "checkpointCount", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { name: "treasury", type: "function", stateMutability: "view", inputs: [], outputs: [
+    { name: "liquid", type: "uint256" }, { name: "invested", type: "uint256" },
+    { name: "principal", type: "uint256" }, { name: "yieldEarned", type: "uint256" }] },
+  { name: "metabolismPerDay", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { name: "lastWords", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+  { name: "totalRevenueEarned", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { name: "feederCount", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { name: "feeders", type: "function", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [{ type: "address" }] },
+  { name: "fedBy", type: "function", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }] },
   { name: "checkpoints", type: "function", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [
     { name: "time", type: "uint64" }, { name: "epoch", type: "uint64" }, { name: "modelHash", type: "bytes32" },
     { name: "uri", type: "string" }, { name: "lossMilli", type: "uint256" }, { name: "computeSpent", type: "uint256" }] },
+];
+
+const NOM_ABI = [
+  { name: "totalSupply", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
 ];
 
 const MOODS = ["EGG", "HAPPY", "PECKISH", "STARVING", "HIBERNATING"];
@@ -140,11 +176,24 @@ if (!cfg?.tomagachi) {
   const scan = chain.blockExplorers.default.url;
   $("addr").innerHTML = `<a href="${scan}/address/${cfg.tomagachi}#writeContract">${cfg.tomagachi}</a>`;
 
+  // Hibernation countdown, ticking client-side between refreshes.
+  let hibernateAtMs = null;
+  setInterval(() => {
+    const el = $("countdown");
+    if (hibernateAtMs === null) { el.textContent = ""; return; }
+    const left = hibernateAtMs - Date.now();
+    if (left <= 0) { el.textContent = "💤 out of satiety — feed to revive the training loop"; return; }
+    const d = Math.floor(left / 86_400_000), h = Math.floor(left / 3_600_000) % 24;
+    const min = Math.floor(left / 60_000) % 60, sec = Math.floor(left / 1000) % 60;
+    el.textContent = `⏳ hibernates in ${d}d ${h}h ${min}m ${sec}s unless fed (or the farm harvests)`;
+  }, 1000);
+
   async function refresh() {
     try {
-      const [[m, s, e, fed, spent, epochs], maxSat] = await Promise.all([
+      const [[m, s, e, fed, spent, epochs], maxSat, perDay] = await Promise.all([
         client.readContract({ ...c, functionName: "vitals" }),
         client.readContract({ ...c, functionName: "maxSatiety" }),
+        client.readContract({ ...c, functionName: "metabolismPerDay" }),
       ]);
       const mood = MOODS[Number(m)];
       $("creature").textContent = FACE[mood];
@@ -156,6 +205,64 @@ if (!cfg?.tomagachi) {
       $("fed").textContent = Number(formatUnits(fed, 6)).toLocaleString();
       $("spent").textContent = Number(formatUnits(spent, 6)).toLocaleString();
       $("epochs").textContent = epochs.toString();
+
+      hibernateAtMs =
+        mood === "EGG" || perDay === 0n
+          ? null
+          : Date.now() + (Number(s) * 86_400_000) / Number(perDay);
+
+      // The creature's actual last on-chain words beat the canned mood line.
+      try {
+        const words = await client.readContract({ ...c, functionName: "lastWords" });
+        if (words) $("speech").textContent = `“${words}”`;
+      } catch { /* pre-v2 deployment */ }
+
+      // treasury() and friends only exist on contracts deployed with the yield layer
+      try {
+        const [[liquid, invested, , yieldEarned], revenue, feederN] = await Promise.all([
+          client.readContract({ ...c, functionName: "treasury" }),
+          client.readContract({ ...c, functionName: "totalRevenueEarned" }),
+          client.readContract({ ...c, functionName: "feederCount" }),
+        ]);
+        $("liquid").textContent = Number(formatUnits(liquid, 6)).toLocaleString();
+        $("farming").textContent = Number(formatUnits(invested, 6)).toLocaleString();
+        $("yield").textContent = Number(formatUnits(yieldEarned, 6)).toLocaleString();
+        $("revenue").textContent = Number(formatUnits(revenue, 6)).toLocaleString();
+        $("feeders").textContent = feederN.toString();
+
+        // Leaderboard: the feeder registry is on-chain, so no log scanning.
+        const count = Math.min(Number(feederN), 100);
+        if (count > 0) {
+          const addrs = await client.multicall({
+            contracts: Array.from({ length: count }, (_, i) =>
+              ({ ...c, functionName: "feeders", args: [BigInt(i)] })),
+            allowFailure: false,
+          });
+          const amounts = await client.multicall({
+            contracts: addrs.map((a) => ({ ...c, functionName: "fedBy", args: [a] })),
+            allowFailure: false,
+          });
+          const top = addrs
+            .map((a, i) => ({ a, v: amounts[i] }))
+            .sort((x, y) => (y.v > x.v ? 1 : y.v < x.v ? -1 : 0))
+            .slice(0, 10);
+          $("leaderboard").innerHTML = top
+            .map((r, i) =>
+              `<tr><td>${i + 1}</td><td class="hash"><a href="${scan}/address/${r.a}">${r.a.slice(0, 6)}…${r.a.slice(-4)}</a></td>
+               <td>$${Number(formatUnits(r.v, 6)).toLocaleString()}</td>
+               <td>${fed > 0n ? (Number((r.v * 1000n) / fed) / 10).toFixed(1) : "0"}%</td></tr>`)
+            .join("");
+        } else {
+          $("leaderboard").innerHTML = `<tr><td colspan="4">no feeders yet — be first, be legend</td></tr>`;
+        }
+      } catch { /* pre-v2 deployment: leave the dashes */ }
+
+      if (cfg.nom) {
+        try {
+          const supply = await client.readContract({ address: cfg.nom, abi: NOM_ABI, functionName: "totalSupply" });
+          $("nomsupply").textContent = Number(formatUnits(supply, 18)).toLocaleString();
+        } catch { /* no NOM address known */ }
+      }
 
       const n = await client.readContract({ ...c, functionName: "checkpointCount" });
       const rows = [];

@@ -7,6 +7,8 @@ export interface AgentState {
   suwappuAgentId?: string;
   epoch: number;
   activeJob?: { id: string; provider: string; startedAt: string; paidUsdc: string };
+  /** Per-vault share-price history (assets per 1e12 shares) for trailing APY. */
+  vaultSamples?: Record<string, { t: number; ppsE12: string }[]>;
 }
 
 const statePath = join(config.stateDir, "state.json");
