@@ -25,6 +25,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const artifact = JSON.parse(
   readFileSync(join(here, "..", "artifacts", "Tomagachi.json"), "utf8")
 );
+const gameArtifact = JSON.parse(
+  readFileSync(join(here, "..", "artifacts", "TomagachiGame.json"), "utf8")
+);
 
 const USDC_BY_CHAIN: Record<string, `0x${string}`> = {
   base: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", // native USDC on Base
@@ -92,10 +95,21 @@ for (const vault of yieldVaults) {
   console.log(`allowed yield vault: ${vault}`);
 }
 
+// The game: the care layer. Zero admin, zero custody — safe to deploy always.
+const gameHash = await wallet.deployContract({
+  abi: gameArtifact.abi,
+  bytecode: gameArtifact.bytecode,
+  args: [address],
+});
+const gameReceipt = await client.waitForTransactionReceipt({ hash: gameHash });
+const game = gameReceipt.contractAddress!;
+console.log(`TomagachiGame: ${game}`);
+
 const out = {
   chain: chainKey,
   chainId: chain.id,
   tomagachi: address,
+  game,
   nom,
   usdc,
   operator,

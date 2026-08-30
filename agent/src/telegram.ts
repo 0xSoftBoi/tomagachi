@@ -10,9 +10,13 @@
  * Broadcasts (need TELEGRAM_CHAT_ID): mood transitions, harvests, epochs,
  * revenue meals — the brain calls announce() as things happen on-chain.
  */
-import { formatUnits } from "viem";
+import { formatUnits, parseAbi } from "viem";
 import { config } from "./config.js";
 import { tomagachiAbi, type Creature } from "./chain.js";
+
+const gameAbi = parseAbi([
+  "function gameState() view returns (uint256 h, uint32 lvl, uint256 xpTotal, uint256 xpNext, uint256 nPlayers)",
+]);
 
 const api = (method: string) => `https://api.telegram.org/bot${config.telegramToken}/${method}`;
 
@@ -95,6 +99,21 @@ async function vitalsText(creature: Creature): Promise<string> {
     if (words) lines.push(`💬 "${words}"`);
   } catch {
     // pre-yield deployment — vitals alone is still a full answer
+  }
+  if (creature.deployment.game) {
+    try {
+      const [h, lvl, xpTotal, xpNext, nPlayers] = (await creature.client.readContract({
+        address: creature.deployment.game,
+        abi: gameAbi,
+        functionName: "gameState",
+      })) as [bigint, number, bigint, bigint, bigint];
+      lines.push(
+        `game: LV ${lvl} · ${xpTotal}/${xpNext} XP · happiness ${h}/100 · ${nPlayers} players` +
+          ` — /pet /play /groom on-chain (see GAME.md)`
+      );
+    } catch {
+      // game not reachable — skip the line
+    }
   }
   return lines.join("\n");
 }

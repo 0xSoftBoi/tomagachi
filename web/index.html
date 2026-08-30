@@ -34,6 +34,7 @@
   .bar .track { background: #062134; border-radius: 6px; height: 12px; margin-top: 3px; overflow: hidden; }
   .bar .fill { height: 100%; background: var(--glow); border-radius: 6px; transition: width .6s; }
   .bar.energy .fill { background: var(--accent); }
+  .bar.happy .fill { background: #ff8fab; }
   .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .8rem; margin-top: 1.5rem; }
   .stat { background: #072a41; border: 1px solid #1c5d8a; border-radius: 12px; padding: .8rem; text-align: center; }
   .stat b { display: block; font-size: 1.1rem; color: var(--foam); }
@@ -64,10 +65,12 @@
   <div class="tank">
     <div class="creature" id="creature">🥚</div>
     <div class="mood" id="mood">…</div>
+    <div class="mood" id="level"></div>
     <div class="speech" id="speech"></div>
     <div class="bars">
       <div class="bar"><label>SATIETY</label><div class="track"><div class="fill" id="satiety" style="width:0%"></div></div></div>
       <div class="bar energy"><label>ENERGY (compute budget)</label><div class="track"><div class="fill" id="energy" style="width:0%"></div></div></div>
+      <div class="bar happy"><label>HAPPINESS (pet · play · groom)</label><div class="track"><div class="fill" id="happiness" style="width:0%"></div></div></div>
     </div>
     <div class="countdown" id="countdown"></div>
     <div class="stats">
@@ -98,6 +101,25 @@
       sign a USDC payment (x402), the request is served, and the revenue is
       eaten as food. Customers keep it alive too.
     </div>
+  </section>
+
+  <section>
+    <h2>The game</h2>
+    <div class="feedbox">
+      Free, on-chain, gas-only — via <code>TomagachiGame</code> at
+      <span class="addr" id="gameaddr">not deployed</span><br />
+      <b>pet</b> (4h cooldown, works even in hibernation — that's keeping it
+      company, 2x XP) · <b>play</b> (8h, needs it awake) · <b>groom</b> (24h).<br />
+      Care on consecutive days for a streak: +10% XP per day, capped at +140%.
+      Feed it while STARVING for 3x XP; revive it from hibernation for 5x and
+      the ⚡ Reviver badge. Everyone's XP levels the creature up (500·n²).<br />
+      XP is a score, not a token. Full rules:
+      <a href="https://github.com/0xSoftBoi/tomagachi/blob/main/GAME.md">GAME.md</a>.
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>player</th><th>xp</th><th>streak</th><th>badges</th></tr></thead>
+      <tbody id="players"><tr><td colspan="5">loading…</td></tr></tbody>
+    </table>
   </section>
 
   <section>
@@ -146,6 +168,23 @@ const ABI = [
 const NOM_ABI = [
   { name: "totalSupply", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
 ];
+
+const GAME_ABI = [
+  { name: "gameState", type: "function", stateMutability: "view", inputs: [], outputs: [
+    { name: "h", type: "uint256" }, { name: "lvl", type: "uint32" }, { name: "xpTotal", type: "uint256" },
+    { name: "xpNext", type: "uint256" }, { name: "nPlayers", type: "uint256" }] },
+  { name: "playerList", type: "function", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [{ type: "address" }] },
+  { name: "playerState", type: "function", stateMutability: "view", inputs: [{ type: "address" }], outputs: [
+    { name: "xp", type: "uint128" }, { name: "streakDays", type: "uint32" }, { name: "careActions", type: "uint32" },
+    { name: "badges", type: "uint32" }, { name: "fedViaGame", type: "uint128" }, { name: "nextPetAt", type: "uint64" },
+    { name: "nextPlayAt", type: "uint64" }, { name: "nextGroomAt", type: "uint64" }] },
+];
+
+// badge bit → icon, in bit order: first touch, clutch, reviver, week streak,
+// moon streak, centurion, whale, bestie
+const BADGE_ICONS = ["🐾", "🩹", "⚡", "📅", "🌙", "💯", "🐋", "💞"];
+const badgeIcons = (mask) =>
+  BADGE_ICONS.filter((_, i) => Number(mask) & (1 << i)).join("") || "–";
 
 const MOODS = ["EGG", "HAPPY", "PECKISH", "STARVING", "HIBERNATING"];
 const FACE = { EGG: "🥚", HAPPY: "🐙", PECKISH: "🐙", STARVING: "🦑", HIBERNATING: "💤" };
@@ -262,6 +301,43 @@ if (!cfg?.tomagachi) {
           const supply = await client.readContract({ address: cfg.nom, abi: NOM_ABI, functionName: "totalSupply" });
           $("nomsupply").textContent = Number(formatUnits(supply, 18)).toLocaleString();
         } catch { /* no NOM address known */ }
+      }
+
+      // The game, if a TomagachiGame is deployed alongside.
+      if (cfg.game) {
+        try {
+          const g = { address: cfg.game, abi: GAME_ABI };
+          $("gameaddr").innerHTML = `<a href="${scan}/address/${cfg.game}#writeContract">${cfg.game}</a>`;
+          const [h, lvl, xpTotal, xpNext, nPlayers] =
+            await client.readContract({ ...g, functionName: "gameState" });
+          $("happiness").style.width = Number(h) + "%";
+          $("level").textContent =
+            `LV ${lvl} · ${Number(xpTotal).toLocaleString()} / ${Number(xpNext).toLocaleString()} XP`;
+
+          const count = Math.min(Number(nPlayers), 100);
+          if (count > 0) {
+            const paddrs = await client.multicall({
+              contracts: Array.from({ length: count }, (_, i) =>
+                ({ ...g, functionName: "playerList", args: [BigInt(i)] })),
+              allowFailure: false,
+            });
+            const pstates = await client.multicall({
+              contracts: paddrs.map((a) => ({ ...g, functionName: "playerState", args: [a] })),
+              allowFailure: false,
+            });
+            const top = paddrs
+              .map((a, i) => ({ a, s: pstates[i] }))
+              .sort((x, y) => (y.s[0] > x.s[0] ? 1 : y.s[0] < x.s[0] ? -1 : 0))
+              .slice(0, 10);
+            $("players").innerHTML = top
+              .map((r, i) =>
+                `<tr><td>${i + 1}</td><td class="hash"><a href="${scan}/address/${r.a}">${r.a.slice(0, 6)}…${r.a.slice(-4)}</a></td>
+                 <td>${Number(r.s[0]).toLocaleString()}</td><td>${r.s[1]}d</td><td>${badgeIcons(r.s[3])}</td></tr>`)
+              .join("");
+          } else {
+            $("players").innerHTML = `<tr><td colspan="5">nobody has petted it yet. imagine.</td></tr>`;
+          }
+        } catch { /* game not deployed or pre-game page */ }
       }
 
       const n = await client.readContract({ ...c, functionName: "checkpointCount" });

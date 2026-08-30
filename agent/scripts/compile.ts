@@ -16,6 +16,7 @@ const root = join(here, "..", "..");
 // The real contract plus the test doubles the EVM test suite deploys.
 const sources: Record<string, { content: string }> = {
   "Tomagachi.sol": { content: readFileSync(join(root, "contracts", "Tomagachi.sol"), "utf8") },
+  "TomagachiGame.sol": { content: readFileSync(join(root, "contracts", "TomagachiGame.sol"), "utf8") },
   "Mocks.sol": { content: readFileSync(join(root, "contracts", "test", "Mocks.sol"), "utf8") },
 };
 

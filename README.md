@@ -51,6 +51,13 @@ autonomous agent that turns every token you feed it into training compute.
   harvested yield raises satiety and mints **no** NOM — it's food the creature
   earned itself. A starved creature with a farm can literally wake itself from
   hibernation on its own yield.
+- **It's an actual game.** [`TomagachiGame.sol`](contracts/TomagachiGame.sol)
+  is the care layer: `pet` / `play` / `groom` on cooldowns raise a happiness
+  stat that decays with neglect, daily care streaks multiply XP, feeding a
+  STARVING creature pays 3x XP and reviving a hibernating one pays 5x plus the
+  ⚡ Reviver badge. Everyone's XP levels the creature up (quadratic — level 20
+  is a village project). Zero admin, zero custody, XP is a score not a token.
+  Full rules in [GAME.md](GAME.md).
 - **It hangs out.** A dependency-free Telegram front-end
   (`agent/src/telegram.ts`) answers `/vitals`, `/treasury` and `/feed` in the
   community chat and broadcasts the drama as it happens on-chain: mood swings,
@@ -80,6 +87,7 @@ matters, with the market data behind it, is in
 | path | what |
 |---|---|
 | [`contracts/Tomagachi.sol`](contracts/Tomagachi.sol) | the creature + NOM token (self-contained, no deps) |
+| [`contracts/TomagachiGame.sol`](contracts/TomagachiGame.sol) | the game: care actions, streaks, XP/levels, badges — see [GAME.md](GAME.md) |
 | [`agent/`](agent/) | the brain: Suwappu swaps, compute brokerage, treasury farming, on-chain ops |
 | [`agent/src/serve.ts`](agent/src/serve.ts) | the shop: OpenAI-compatible endpoint, pricing, usage ledger |
 | [`agent/src/x402.ts`](agent/src/x402.ts) | pay-per-call: 402 challenge, EIP-3009 settlement, revenue ledger |
@@ -161,6 +169,7 @@ creature starts paying for its own GPUs on-chain.
 - [x] x402 pay-per-call inference — revenue settles on Base and is eaten via `earn()`
 - [x] Telegram front-end: feed & check vitals in chat, on-chain drama broadcast live
 - [x] An EVM test suite (`agent/test/`) covering the whole metabolism
+- [x] The care game: pet/play/groom, streaks, mood-bonus feeding, levels, badges ([GAME.md](GAME.md))
 - [ ] Get listed: apply as a provider, first traffic, first dollar
 - [ ] Memory layer v2 — summarize sessions on the same GPU that serves them
 - [ ] Adapters for specific decentralized GPU markets (Akash, io.net, Nosana)

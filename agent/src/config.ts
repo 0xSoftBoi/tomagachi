@@ -10,6 +10,7 @@ export interface Deployment {
   chain: string;
   chainId: number;
   tomagachi: `0x${string}`;
+  game?: `0x${string}`; // TomagachiGame, deployed alongside since the care layer
   nom: `0x${string}`;
   usdc: `0x${string}`;
   operator: `0x${string}`;
