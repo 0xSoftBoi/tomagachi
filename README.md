@@ -57,7 +57,10 @@ autonomous agent that turns every token you feed it into training compute.
   STARVING creature pays 3x XP and reviving a hibernating one pays 5x plus the
   ⚡ Reviver badge. Everyone's XP levels the creature up (quadratic — level 20
   is a village project). Zero admin, zero custody, XP is a score not a token.
-  Full rules in [GAME.md](GAME.md).
+  And it's *playable*: [`web/game.html`](web/game.html) — **The Tank** — is a
+  full animated client with a procedurally animated creature, a shrimp-chase
+  minigame, synthesized sound and a wallet-connected on-chain mode, playable
+  instantly in demo mode with no wallet at all. Full rules in [GAME.md](GAME.md).
 - **It hangs out.** A dependency-free Telegram front-end
   (`agent/src/telegram.ts`) answers `/vitals`, `/treasury` and `/feed` in the
   community chat and broadcasts the drama as it happens on-chain: mood swings,
@@ -92,7 +95,8 @@ matters, with the market data behind it, is in
 | [`agent/src/serve.ts`](agent/src/serve.ts) | the shop: OpenAI-compatible endpoint, pricing, usage ledger |
 | [`agent/src/x402.ts`](agent/src/x402.ts) | pay-per-call: 402 challenge, EIP-3009 settlement, revenue ledger |
 | [`agent/src/telegram.ts`](agent/src/telegram.ts) | the community chat front-end (commands + broadcasts) |
-| [`agent/test/`](agent/test/) | EVM test suite: feeding, decay, farming, earning, governance |
+| [`agent/test/`](agent/test/) | EVM test suite: feeding, decay, farming, earning, governance, the game |
+| [`web/game.html`](web/game.html) | **The Tank** — the playable game client (demo mode + on-chain mode) |
 | [`model/`](model/) | SUWA-LM character adapters, SUWA-WM world model |
 | [`web/`](web/) | live vitals page (static, reads Base directly) |
 | [`deploy/`](deploy/) | vLLM config, preflight tests, the listing checklist |

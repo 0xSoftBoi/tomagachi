@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Suwa — The Tank</title>
+<style>
+  :root {
+    --deep: #06283d; --foam: #dff6ff; --glow: #47b5ff; --accent: #ffd166;
+    --bad: #ef476f; --pink: #ff8fab; --ok: #7bd88f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+    background: #041c2c; color: var(--foam); user-select: none;
+    -webkit-user-select: none; touch-action: manipulation;
+  }
+  #tank { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: pointer; }
+
+  .hud { position: fixed; pointer-events: none; z-index: 5; }
+  .panel {
+    background: rgba(4, 24, 38, .78); border: 1px solid #1c5d8a; border-radius: 14px;
+    padding: .7rem .9rem; backdrop-filter: blur(6px); pointer-events: auto;
+  }
+
+  /* top-left: vitals */
+  #vitals { top: .8rem; left: .8rem; width: min(280px, 44vw); }
+  .bar { margin: .3rem 0; }
+  .bar label { font-size: .58rem; letter-spacing: .14em; opacity: .8; display: flex; justify-content: space-between; }
+  .bar .track { background: #04141f; border-radius: 5px; height: 9px; margin-top: 2px; overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 5px; transition: width .5s; background: var(--glow); }
+  .bar.hap .fill { background: var(--pink); }
+  .bar.sat .fill { background: var(--accent); }
+  #moodline { font-size: .68rem; letter-spacing: .12em; margin-bottom: .1rem; }
+  #countdown { font-size: .58rem; opacity: .8; margin-top: .3rem; min-height: .9em; }
+
+  /* top-right: level + streak + badges */
+  #progress { top: .8rem; right: .8rem; text-align: right; }
+  #levelchip { font-size: .95rem; color: var(--accent); letter-spacing: .1em; }
+  #xpline { font-size: .58rem; opacity: .85; margin-top: .15rem; }
+  #xptrack { background: #04141f; border-radius: 5px; height: 7px; margin-top: .3rem; overflow: hidden; width: 180px; }
+  #xpfill { height: 100%; background: linear-gradient(90deg, var(--glow), var(--pink)); border-radius: 5px; transition: width .6s; }
+  #streak { font-size: .62rem; margin-top: .35rem; color: #ffb703; }
+  #badges { margin-top: .35rem; font-size: .95rem; letter-spacing: .12em; min-height: 1.2em; }
+
+  /* bottom: actions */
+  #actions {
+    bottom: 1rem; left: 50%; transform: translateX(-50%);
+    display: flex; gap: .6rem; pointer-events: auto;
+  }
+  .act {
+    position: relative; width: 74px; height: 74px; border-radius: 18px; border: 1px solid #1c5d8a;
+    background: rgba(4, 24, 38, .85); color: var(--foam); font-family: inherit;
+    font-size: .6rem; letter-spacing: .08em; cursor: pointer; overflow: hidden;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .2rem;
+    transition: transform .08s;
+  }
+  .act .ico { font-size: 1.5rem; }
+  .act:active { transform: scale(.93); }
+  .act:disabled { cursor: default; opacity: .85; }
+  .act .cd {
+    position: absolute; inset: 0; background: rgba(2, 10, 16, .72);
+    display: flex; align-items: center; justify-content: center; font-size: .7rem; color: var(--accent);
+  }
+  .act .cd[hidden] { display: none; }
+
+  /* toasts */
+  #toasts { bottom: 6.6rem; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: .35rem; }
+  .toast {
+    background: rgba(4, 24, 38, .92); border: 1px solid #1c5d8a; border-radius: 999px;
+    padding: .35rem .95rem; font-size: .68rem; letter-spacing: .06em; white-space: nowrap;
+    animation: rise 3.4s forwards;
+  }
+  .toast.good { border-color: var(--ok); }
+  .toast.warn { border-color: var(--bad); color: #ffc2d1; }
+  @keyframes rise { 0% { opacity: 0; transform: translateY(8px) } 8% { opacity: 1; transform: none } 80% { opacity: 1 } 100% { opacity: 0; transform: translateY(-10px) } }
+
+  /* top-center status */
+  #status { top: .8rem; left: 50%; transform: translateX(-50%); font-size: .6rem; letter-spacing: .14em; opacity: .9; text-align: center; }
+  #status .panel { padding: .35rem .9rem; border-radius: 999px; }
+  #status a, #status button {
+    color: var(--glow); background: none; border: none; font: inherit; cursor: pointer;
+    letter-spacing: inherit; pointer-events: auto; text-decoration: underline;
+  }
+  #mute { position: fixed; bottom: 1rem; right: 1rem; z-index: 6; }
+  #mute button {
+    pointer-events: auto; background: rgba(4,24,38,.85); color: var(--foam); border: 1px solid #1c5d8a;
+    border-radius: 12px; width: 44px; height: 44px; font-size: 1.1rem; cursor: pointer;
+  }
+  #speech {
+    position: fixed; z-index: 4; max-width: 260px; padding: .45rem .7rem; font-size: .66rem;
+    background: rgba(223, 246, 255, .95); color: #06283d; border-radius: 12px; border-bottom-left-radius: 2px;
+    opacity: 0; transition: opacity .4s; pointer-events: none; line-height: 1.4;
+  }
+  @media (max-width: 560px) {
+    #xptrack { width: 120px; }
+    .act { width: 62px; height: 62px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="tank"></canvas>
+
+<div class="hud" id="status"><div class="panel"><span id="statustext">…</span></div></div>
+
+<div class="hud panel" id="vitals">
+  <div id="moodline">…</div>
+  <div class="bar sat"><label><span>SATIETY</span><span id="satpct"></span></label><div class="track"><div class="fill" id="satfill" style="width:0%"></div></div></div>
+  <div class="bar hap"><label><span>HAPPINESS</span><span id="happct"></span></label><div class="track"><div class="fill" id="hapfill" style="width:0%"></div></div></div>
+  <div id="countdown"></div>
+</div>
+
+<div class="hud panel" id="progress">
+  <div id="levelchip">LV 0</div>
+  <div id="xpline"></div>
+  <div id="xptrack"><div id="xpfill" style="width:0%"></div></div>
+  <div id="streak"></div>
+  <div id="badges"></div>
+</div>
+
+<div class="hud" id="toasts"></div>
+<div id="speech"></div>
+
+<div class="hud" id="actions">
+  <button class="act" id="btnPet"><span class="ico">🫳</span><span>PET</span><span class="cd" hidden></span></button>
+  <button class="act" id="btnPlay"><span class="ico">🦐</span><span>PLAY</span><span class="cd" hidden></span></button>
+  <button class="act" id="btnGroom"><span class="ico">🧽</span><span>GROOM</span><span class="cd" hidden></span></button>
+  <button class="act" id="btnFeed"><span class="ico">🍤</span><span>FEED</span><span class="cd" hidden></span></button>
+</div>
+<div class="hud" id="mute"><button id="mutebtn" title="sound">🔊</button></div>
+
+<script type="module">
+/* ============================================================ utilities */
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const rand = (a = 1, b) => (b === undefined ? Math.random() * a : a + Math.random() * (b - a));
+const TAU = Math.PI * 2;
+const $ = (id) => document.getElementById(id);
+const now = () => performance.now();
+
+/* ============================================================ audio (synthesized — no assets) */
+const audio = {
+  ctx: null, muted: false,
+  ensure() {
+    if (!this.ctx) { try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch {} }
+    if (this.ctx?.state === "suspended") this.ctx.resume();
+    return this.ctx;
+  },
+  tone(freq, dur = .15, type = "sine", gain = .08, when = 0) {
+    if (this.muted) return;
+    const c = this.ensure(); if (!c) return;
+    const t = c.currentTime + when;
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(gain, t + .015);
+    g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+    o.connect(g); g.connect(c.destination); o.start(t); o.stop(t + dur + .05);
+  },
+  bloop() { this.tone(rand(300, 380), .18, "sine", .07); this.tone(rand(520, 620), .12, "sine", .04, .05); },
+  pop() { this.tone(rand(700, 900), .06, "triangle", .05); },
+  munch() { this.tone(rand(180, 240), .09, "square", .045); this.tone(rand(120, 160), .1, "square", .04, .07); },
+  chime() { [523, 659, 784].forEach((f, i) => this.tone(f, .35, "sine", .06, i * .07)); },
+  fanfare() { [392, 523, 659, 784, 1046].forEach((f, i) => this.tone(f, .5, "triangle", .07, i * .1)); },
+  sad() { this.tone(220, .4, "sine", .06); this.tone(196, .5, "sine", .06, .18); },
+};
+$("mutebtn").onclick = () => { audio.muted = !audio.muted; $("mutebtn").textContent = audio.muted ? "🔇" : "🔊"; };
+
+/* ============================================================ chain config (optional — demo works without it) */
+async function loadConfig() {
+  const q = new URLSearchParams(location.search);
+  if (q.get("contract")) return { tomagachi: q.get("contract"), game: q.get("game"), chain: q.get("chain") ?? "base" };
+  try { return await (await fetch("./deployment.json")).json(); } catch { return null; }
+}
+
+/* ============================================================ game state — one interface, two backends */
+const MOODS = ["EGG", "HAPPY", "PECKISH", "STARVING", "HIBERNATING"];
+const BADGE_ICONS = ["🐾", "🩹", "⚡", "📅", "🌙", "💯", "🐋", "💞"];
+const BADGE_NAMES = ["First Touch", "Clutch", "Reviver", "Week Streak", "Moon Streak", "Centurion", "Whale", "Bestie"];
+
+/** Demo backend: the whole tamagotchi simulated locally, fast cooldowns, so
+ *  the tank is a real game the second the page opens. */
+function demoBackend() {
+  const s = {
+    mood: "HAPPY", satiety: .62, happiness: .55, xp: 120, level: 0, streak: 1,
+    badges: 1, careActions: 3, lastTick: now(),
+    cd: { pet: 0, play: 0, groom: 0, feed: 0 },
+    cdTotal: { pet: 8_000, play: 15_000, groom: 25_000, feed: 6_000 },
+  };
+  const xpNeed = (n) => 500 * n * n;
+  const tick = () => {
+    const dt = (now() - s.lastTick) / 1000; s.lastTick = now();
+    s.satiety = clamp(s.satiety - dt / 240, 0, 1);      // empty in ~4 min of neglect
+    s.happiness = clamp(s.happiness - dt / 300, 0, 1);
+    s.mood = s.satiety <= 0 ? "HIBERNATING" : s.satiety < .2 ? "STARVING" : s.satiety < .5 ? "PECKISH" : "HAPPY";
+    while (s.xp >= xpNeed(s.level + 1)) { s.level++; events.emit("levelup", s.level); }
+  };
+  const gain = (xp, badgeBit) => {
+    s.xp += Math.round(xp * (1 + Math.min(s.streak, 14) * .1));
+    s.careActions++;
+    if (s.careActions % 12 === 0) { s.streak++; events.emit("streak", s.streak); }
+    if (badgeBit !== undefined && !(s.badges & (1 << badgeBit))) { s.badges |= 1 << badgeBit; events.emit("badge", badgeBit); }
+    if (s.careActions >= 100) s.badges |= 1 << 7;
+  };
+  return {
+    label: "DEMO TANK — deploy the contracts to play on-chain",
+    demo: true,
+    state() {
+      tick();
+      return {
+        mood: s.mood, satiety: s.satiety, happiness: s.happiness,
+        level: s.level, xp: s.xp, xpNext: xpNeed(s.level + 1), xpPrev: xpNeed(s.level),
+        streak: s.streak, badges: s.badges,
+        cooldowns: Object.fromEntries(Object.keys(s.cd).map((k) => [k, { readyAt: s.cd[k], total: s.cdTotal[k] }])),
+        secondsToHibernate: s.satiety * 240,
+      };
+    },
+    async pet() { s.cd.pet = now() + s.cdTotal.pet; gain(s.mood === "HIBERNATING" ? 10 : 5, 0); s.happiness = clamp(s.happiness + .06, 0, 1); },
+    async play() { s.cd.play = now() + s.cdTotal.play; },
+    async playDone(catches) { gain(15 + catches * 2); s.happiness = clamp(s.happiness + .16, 0, 1); },
+    async groom() { s.cd.groom = now() + s.cdTotal.groom; gain(10); s.happiness = clamp(s.happiness + .11, 0, 1); },
+    async feed() {
+      s.cd.feed = now() + s.cdTotal.feed;
+      const m = s.mood;
+      gain(m === "HIBERNATING" ? 50 : m === "STARVING" ? 30 : 10, m === "HIBERNATING" ? 2 : m === "STARVING" ? 1 : undefined);
+      s.satiety = clamp(s.satiety + .22, 0, 1);
+      return m;
+    },
+  };
+}
+
+/** Chain backend: same interface against the deployed Tomagachi + Game. */
+async function chainBackend(cfg) {
+  const { createPublicClient, createWalletClient, custom, http, formatUnits, parseUnits } =
+    await import("https://esm.sh/viem@2.21.0");
+  const chains = await import("https://esm.sh/viem@2.21.0/chains");
+  const chain = cfg.chain === "baseSepolia" ? chains.baseSepolia : chains.base;
+  const pub = createPublicClient({ chain, transport: http() });
+
+  const T = { address: cfg.tomagachi, abi: [
+    { name: "vitals", type: "function", stateMutability: "view", inputs: [], outputs: [
+      { type: "uint8" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" }] },
+    { name: "maxSatiety", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+    { name: "metabolismPerDay", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+    { name: "lastWords", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+  ]};
+  const G = { address: cfg.game, abi: [
+    { name: "gameState", type: "function", stateMutability: "view", inputs: [], outputs: [
+      { type: "uint256" }, { type: "uint32" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" }] },
+    { name: "playerState", type: "function", stateMutability: "view", inputs: [{ type: "address" }], outputs: [
+      { type: "uint128" }, { type: "uint32" }, { type: "uint32" }, { type: "uint32" }, { type: "uint128" },
+      { type: "uint64" }, { type: "uint64" }, { type: "uint64" }] },
+    { name: "pet", type: "function", stateMutability: "nonpayable", inputs: [], outputs: [] },
+    { name: "play", type: "function", stateMutability: "nonpayable", inputs: [], outputs: [] },
+    { name: "groom", type: "function", stateMutability: "nonpayable", inputs: [], outputs: [] },
+    { name: "gameFeed", type: "function", stateMutability: "nonpayable", inputs: [{ type: "uint256" }], outputs: [] },
+    { name: "xpForLevel", type: "function", stateMutability: "view", inputs: [{ type: "uint32" }], outputs: [{ type: "uint256" }] },
+  ]};
+  const E = { address: cfg.usdc, abi: [
+    { name: "approve", type: "function", stateMutability: "nonpayable", inputs: [{ type: "address" }, { type: "uint256" }], outputs: [{ type: "bool" }] },
+  ]};
+
+  let account = null, wallet = null;
+  async function connect() {
+    if (!window.ethereum) { toast("no wallet found — install one or enjoy read-only", "warn"); return; }
+    wallet = createWalletClient({ chain, transport: custom(window.ethereum) });
+    [account] = await wallet.requestAddresses();
+    toast(`connected ${account.slice(0, 6)}…${account.slice(-4)}`, "good");
+    refresh();
+  }
+
+  const cache = {
+    mood: "EGG", satiety: 0, happiness: 0, level: 0, xp: 0, xpNext: 500, xpPrev: 0,
+    streak: 0, badges: 0, secondsToHibernate: 0, lastWords: "",
+    cooldowns: { pet: { readyAt: 0, total: 14_400_000 }, play: { readyAt: 0, total: 28_800_000 }, groom: { readyAt: 0, total: 86_400_000 }, feed: { readyAt: 0, total: 0 } },
+  };
+  async function refresh() {
+    try {
+      const [[m, s], maxSat, perDay] = await Promise.all([
+        pub.readContract({ ...T, functionName: "vitals" }),
+        pub.readContract({ ...T, functionName: "maxSatiety" }),
+        pub.readContract({ ...T, functionName: "metabolismPerDay" }),
+      ]);
+      cache.mood = MOODS[Number(m)];
+      cache.satiety = Number(s) / Number(maxSat);
+      cache.secondsToHibernate = perDay > 0n ? Number((s * 86_400n) / perDay) : 0;
+      pub.readContract({ ...T, functionName: "lastWords" }).then((w) => (cache.lastWords = w)).catch(() => {});
+      if (cfg.game) {
+        const [h, lvl, xpTotal] = await pub.readContract({ ...G, functionName: "gameState" });
+        cache.happiness = Number(h) / 100; cache.level = Number(lvl); cache.xp = Number(xpTotal);
+        cache.xpNext = 500 * (cache.level + 1) ** 2; cache.xpPrev = 500 * cache.level ** 2;
+        if (account) {
+          const p = await pub.readContract({ ...G, functionName: "playerState", args: [account] });
+          cache.streak = Number(p[1]); cache.badges = Number(p[3]);
+          cache.cooldowns.pet.readyAt = Number(p[5]) * 1000 - Date.now() + now();
+          cache.cooldowns.play.readyAt = Number(p[6]) * 1000 - Date.now() + now();
+          cache.cooldowns.groom.readyAt = Number(p[7]) * 1000 - Date.now() + now();
+        }
+      }
+    } catch (e) { console.warn("refresh", e); }
+  }
+  refresh(); setInterval(refresh, 15_000);
+
+  async function send(target, functionName, args = []) {
+    if (!account) { await connect(); if (!account) throw new Error("no wallet"); }
+    const hash = await wallet.writeContract({ ...target, functionName, args, account, chain });
+    toast("tx sent — waiting…");
+    await pub.waitForTransactionReceipt({ hash });
+    await refresh();
+  }
+
+  return {
+    label: cfg.game ? "" : "game contract not in deployment.json — read-only tank",
+    demo: false, connect, hasWallet: () => Boolean(account),
+    state() { return { ...cache }; },
+    async pet() { await send(G, "pet"); },
+    async play() { await send(G, "play"); },
+    async playDone() {},
+    async groom() { await send(G, "groom"); },
+    async feed() {
+      const amount = parseUnits("1", 6); // 1 USDC per feed tap
+      const m = cache.mood;
+      await send(E, "approve", [cfg.game, amount]);
+      await send(G, "gameFeed", [amount]);
+      return m;
+    },
+  };
+}
+
+/* tiny event bus so backends can celebrate */
+const events = { m: {}, on(k, f) { (this.m[k] ??= []).push(f); }, emit(k, v) { (this.m[k] ?? []).forEach((f) => f(v)); } };
+
+/* ============================================================ renderer */
+const canvas = $("tank"), ctx = canvas.getContext("2d");
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener("resize", resize); resize();
+
+const pointer = { x: innerWidth / 2, y: innerHeight / 3, down: false };
+addEventListener("pointermove", (e) => { pointer.x = e.clientX; pointer.y = e.clientY; });
+
+/* --- particles ------------------------------------------------------- */
+const particles = [];
+function spawn(type, x, y, n = 1, opts = {}) {
+  for (let i = 0; i < n; i++) particles.push({
+    type, x: x + rand(-14, 14), y: y + rand(-10, 10),
+    vx: rand(-.4, .4), vy: type === "bubble" ? rand(-1.4, -.6) : rand(-.9, -.3),
+    life: 1, decay: rand(.006, .014), size: rand(.7, 1.3), spin: rand(TAU), ...opts,
+  });
+}
+function drawParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.life -= p.decay; p.spin += .04;
+    if (p.type === "confetti") { p.vy += .04; p.vx *= .99; }
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    ctx.globalAlpha = clamp(p.life, 0, 1);
+    if (p.type === "bubble") {
+      ctx.strokeStyle = "rgba(223,246,255,.55)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(p.x, p.y + Math.sin(p.spin) * 2, 3.2 * p.size, 0, TAU); ctx.stroke();
+    } else if (p.type === "heart") {
+      ctx.font = `${13 * p.size}px serif`; ctx.fillText("💗", p.x, p.y);
+    } else if (p.type === "sparkle") {
+      ctx.font = `${11 * p.size}px serif`; ctx.fillText("✨", p.x, p.y);
+    } else if (p.type === "zzz") {
+      ctx.fillStyle = "rgba(223,246,255,.8)"; ctx.font = `${12 * p.size}px monospace`; ctx.fillText("z", p.x, p.y);
+    } else if (p.type === "crumb") {
+      ctx.fillStyle = "#ffd166"; ctx.fillRect(p.x, p.y, 2.5, 2.5);
+    } else if (p.type === "confetti") {
+      ctx.fillStyle = `hsl(${(p.spin * 90) % 360},80%,65%)`;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.spin); ctx.fillRect(-3, -1.5, 6, 3); ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* --- background ------------------------------------------------------ */
+const kelp = Array.from({ length: 7 }, (_, i) => ({
+  x: (i + .5) / 7, h: rand(.18, .38), phase: rand(TAU), w: rand(6, 11),
+}));
+const fish = Array.from({ length: 9 }, () => ({
+  x: rand(1), y: rand(.15, .75), v: rand(.0003, .0009) * (Math.random() < .5 ? 1 : -1),
+  size: rand(5, 10), hue: rand(160, 340), phase: rand(TAU),
+}));
+function drawBackground(t, moodDim) {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, moodDim ? "#0a2233" : "#0b3d5c");
+  g.addColorStop(1, "#041524");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  // light rays
+  ctx.save(); ctx.globalAlpha = .05;
+  for (let i = 0; i < 3; i++) {
+    const x = W * (.2 + i * .3) + Math.sin(t / 4000 + i) * 40;
+    ctx.fillStyle = "#9be1ff";
+    ctx.beginPath(); ctx.moveTo(x - 30, -10); ctx.lineTo(x + 30, -10);
+    ctx.lineTo(x + 140, H); ctx.lineTo(x - 140, H); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+
+  // fish
+  for (const f of fish) {
+    f.x = (f.x + f.v * 16 + 1) % 1;
+    const fx = f.x * W, fy = f.y * H + Math.sin(t / 900 + f.phase) * 6;
+    ctx.save(); ctx.translate(fx, fy); if (f.v < 0) ctx.scale(-1, 1);
+    ctx.fillStyle = `hsla(${f.hue},60%,60%,.5)`;
+    ctx.beginPath(); ctx.ellipse(0, 0, f.size, f.size * .45, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-f.size, 0); ctx.lineTo(-f.size - 5, -4); ctx.lineTo(-f.size - 5, 4); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
+  // sand + kelp
+  ctx.fillStyle = "#123147";
+  ctx.beginPath(); ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 40) ctx.lineTo(x, H - 26 - Math.sin(x / 90) * 8);
+  ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+  for (const k of kelp) {
+    const bx = k.x * W, hgt = k.h * H, segs = 7;
+    ctx.strokeStyle = "rgba(38,120,90,.55)"; ctx.lineWidth = k.w; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(bx, H - 20);
+    for (let s = 1; s <= segs; s++) {
+      const yy = H - 20 - (hgt * s) / segs;
+      ctx.lineTo(bx + Math.sin(t / 1300 + k.phase + s * .7) * (4 + s * 2.2), yy);
+    }
+    ctx.stroke();
+  }
+
+  if (Math.random() < .05) spawn("bubble", rand(W), H - 30);
+}
+
+/* --- the creature ---------------------------------------------------- */
+const PALETTES = {
+  HAPPY:       { body: "#ff8fab", belly: "#ffc2d1", dark: "#d6608a" },
+  PECKISH:     { body: "#e58ba4", belly: "#efb6c6", dark: "#b95a80" },
+  STARVING:    { body: "#9d8aa8", belly: "#c3b4cc", dark: "#71627e" },
+  HIBERNATING: { body: "#5d6b82", belly: "#7e8ba0", dark: "#46536a" },
+  EGG:         { body: "#dff6ff", belly: "#ffffff", dark: "#9cc8dd" },
+};
+const suwa = {
+  x: innerWidth / 2, y: innerHeight * .42, vx: 0, vy: 0,
+  targetX: innerWidth / 2, targetY: innerHeight * .42,
+  mood: "HAPPY", size: 46, wigglUntil: 0, munchUntil: 0, blinkAt: now() + rand(1500, 4000), blink: 0,
+  state: "idle", stateUntil: 0, wanderAt: 0,
+  tentacles: Array.from({ length: 7 }, (_, i) => ({
+    points: Array.from({ length: 11 }, () => ({ x: 0, y: 0 })), phase: rand(TAU), side: i,
+  })),
+};
+function retargetWander(t) {
+  suwa.targetX = rand(W * .2, W * .8);
+  suwa.targetY = rand(H * .25, H * .6);
+  suwa.wanderAt = t + rand(2500, 6000);
+}
+function updateCreature(t, dt) {
+  const m = suwa.mood;
+  if (m === "HIBERNATING") {
+    suwa.targetX = lerp(suwa.targetX, W / 2, .01);
+    suwa.targetY = H - 60 - suwa.size;
+    if (Math.random() < .012) spawn("zzz", suwa.x + suwa.size * .8, suwa.y - suwa.size, 1, { vy: -.5, decay: .006 });
+  } else if (suwa.state === "toFood" && food.length) {
+    const f = food[0]; suwa.targetX = f.x; suwa.targetY = f.y;
+  } else if (suwa.state === "chase" && shrimp.active) {
+    suwa.targetX = shrimp.x; suwa.targetY = shrimp.y;
+  } else if (t > suwa.wanderAt) retargetWander(t);
+
+  const speed = m === "STARVING" ? .015 : m === "PECKISH" ? .02 : suwa.state === "chase" ? .045 : .028;
+  suwa.vx = lerp(suwa.vx, (suwa.targetX - suwa.x) * speed, .1);
+  suwa.vy = lerp(suwa.vy, (suwa.targetY - suwa.y) * speed, .1);
+  suwa.x += suwa.vx; suwa.y += suwa.vy;
+  if (m !== "HIBERNATING") suwa.y += Math.sin(t / 700) * .5; // idle bob
+
+  // blink
+  if (t > suwa.blinkAt) { suwa.blink = 1; suwa.blinkAt = t + rand(1800, 4800); }
+  suwa.blink = Math.max(0, suwa.blink - dt * .01);
+
+  // tentacle follow-chains
+  suwa.tentacles.forEach((tn, i) => {
+    const spread = (i - 3) / 3;
+    const ax = suwa.x + spread * suwa.size * .9;
+    const ay = suwa.y + suwa.size * .55;
+    const pts = tn.points;
+    pts[0].x = ax; pts[0].y = ay;
+    const wave = m === "HIBERNATING" ? .18 : suwa.state === "chase" ? 1.6 : .8;
+    for (let j = 1; j < pts.length; j++) {
+      const prev = pts[j - 1];
+      const targetX = prev.x + Math.sin(t / 300 + tn.phase + j * .55) * wave * (j * .5) + spread * 2 - suwa.vx * j * .35;
+      const targetY = prev.y + 7.5 - suwa.vy * j * .2;
+      pts[j].x = lerp(pts[j].x, targetX, .35);
+      pts[j].y = lerp(pts[j].y, targetY, .35);
+    }
+  });
+}
+function drawCreature(t) {
+  const m = suwa.mood, pal = PALETTES[m] ?? PALETTES.HAPPY;
+  const wiggle = t < suwa.wigglUntil ? Math.sin(t / 40) * .09 : 0;
+  const squash = 1 + Math.sin(t / 700) * .04 + wiggle;
+  const tilt = clamp(suwa.vx * .02, -.3, .3);
+
+  if (m === "EGG") { // the egg wobbles
+    const wob = Math.sin(t / 400) * .06;
+    ctx.save(); ctx.translate(W / 2, H - 70); ctx.rotate(wob);
+    ctx.fillStyle = pal.body;
+    ctx.beginPath(); ctx.ellipse(0, -34, 34, 44, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = pal.dark; ctx.font = "12px monospace"; ctx.textAlign = "center";
+    ctx.fillText("· · ·", 0, -30);
+    ctx.restore();
+    return;
+  }
+
+  // tentacles behind body
+  for (const tn of suwa.tentacles) {
+    ctx.strokeStyle = pal.dark; ctx.lineCap = "round";
+    const pts = tn.points;
+    for (let j = 1; j < pts.length; j++) {
+      ctx.lineWidth = lerp(10, 1.6, j / pts.length);
+      ctx.beginPath(); ctx.moveTo(pts[j - 1].x, pts[j - 1].y); ctx.lineTo(pts[j].x, pts[j].y); ctx.stroke();
+    }
+  }
+
+  ctx.save();
+  ctx.translate(suwa.x, suwa.y); ctx.rotate(tilt); ctx.scale(1 / squash, squash);
+  // mantle
+  ctx.fillStyle = pal.body;
+  ctx.beginPath(); ctx.ellipse(0, 0, suwa.size, suwa.size * 1.05, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = pal.belly;
+  ctx.beginPath(); ctx.ellipse(0, suwa.size * .3, suwa.size * .72, suwa.size * .55, 0, 0, TAU); ctx.fill();
+
+  // eyes track the pointer
+  const dx = clamp((pointer.x - suwa.x) / 140, -1, 1) * 4;
+  const dy = clamp((pointer.y - suwa.y) / 140, -1, 1) * 3;
+  const eyeH = m === "HIBERNATING" ? .12 : 1 - suwa.blink * .92;
+  for (const side of [-1, 1]) {
+    const ex = side * suwa.size * .4, ey = -suwa.size * .18;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.ellipse(ex, ey, 10, 11 * eyeH, 0, 0, TAU); ctx.fill();
+    if (eyeH > .3) {
+      ctx.fillStyle = "#22223b";
+      ctx.beginPath(); ctx.ellipse(ex + dx, ey + dy, 4.6, 5.2 * eyeH, 0, 0, TAU); ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.arc(ex + dx - 1.4, ey + dy - 1.6, 1.5, 0, TAU); ctx.fill();
+    } else {
+      ctx.strokeStyle = "#22223b"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(ex - 6, ey); ctx.quadraticCurveTo(ex, ey + 3, ex + 6, ey); ctx.stroke();
+    }
+  }
+  // mouth
+  ctx.strokeStyle = pal.dark; ctx.lineWidth = 2.4; ctx.lineCap = "round";
+  ctx.beginPath();
+  if (t < suwa.munchUntil) {
+    const o = (Math.sin(t / 60) + 1) * 3.2;
+    ctx.ellipse(0, suwa.size * .22, 4.5, 3 + o, 0, 0, TAU);
+  } else if (m === "HAPPY") {
+    ctx.arc(0, suwa.size * .14, 8, .15 * Math.PI, .85 * Math.PI);
+  } else if (m === "STARVING") {
+    ctx.arc(0, suwa.size * .34, 8, 1.15 * Math.PI, 1.85 * Math.PI);
+  } else {
+    ctx.moveTo(-6, suwa.size * .24); ctx.lineTo(6, suwa.size * .24);
+  }
+  ctx.stroke();
+  // blush when recently petted
+  if (t < suwa.wigglUntil) {
+    ctx.fillStyle = "rgba(255,105,140,.4)";
+    for (const side of [-1, 1]) { ctx.beginPath(); ctx.ellipse(side * suwa.size * .62, suwa.size * .05, 7, 4, 0, 0, TAU); ctx.fill(); }
+  }
+  ctx.restore();
+}
+
+/* --- food & the shrimp chase minigame -------------------------------- */
+const food = [];
+function dropFood() {
+  for (let i = 0; i < 4; i++) food.push({ x: rand(W * .25, W * .75), y: -rand(10, 80), vy: rand(.7, 1.2), t: rand(TAU) });
+  suwa.state = "toFood";
+}
+function updateFood(t) {
+  for (let i = food.length - 1; i >= 0; i--) {
+    const f = food[i];
+    f.y += f.vy; f.x += Math.sin(t / 400 + f.t) * .5;
+    if (f.y > H - 40) f.y = H - 40;
+    ctx.font = "16px serif"; ctx.fillText("🍤", f.x - 8, f.y + 6);
+    const d = Math.hypot(f.x - suwa.x, f.y - suwa.y);
+    if (d < suwa.size * .9 && suwa.mood !== "EGG") {
+      food.splice(i, 1);
+      suwa.munchUntil = t + 600; audio.munch();
+      spawn("crumb", f.x, f.y, 6, { vy: .4, decay: .03 });
+    }
+  }
+  if (!food.length && suwa.state === "toFood") { suwa.state = "idle"; retargetWander(t); }
+}
+
+const shrimp = { active: false, x: 0, y: 0, vx: 0, vy: 0, until: 0, catches: 0 };
+function startChase(t) {
+  shrimp.active = true; shrimp.catches = 0; shrimp.until = t + 9000;
+  shrimp.x = rand(W * .2, W * .8); shrimp.y = rand(H * .25, H * .6);
+  suwa.state = "chase";
+  toast("chase the shrimp! it follows your pointer 🦐", "good");
+}
+function updateChase(t) {
+  if (!shrimp.active) return;
+  // the shrimp darts toward the pointer, jitters away from the creature
+  shrimp.vx = lerp(shrimp.vx, (pointer.x - shrimp.x) * .04, .2) + rand(-1, 1);
+  shrimp.vy = lerp(shrimp.vy, (pointer.y - shrimp.y) * .04, .2) + rand(-1, 1);
+  shrimp.x = clamp(shrimp.x + shrimp.vx, 20, W - 20);
+  shrimp.y = clamp(shrimp.y + shrimp.vy, 20, H - 60);
+  ctx.font = "20px serif"; ctx.fillText("🦐", shrimp.x - 10, shrimp.y + 7);
+  if (Math.hypot(shrimp.x - suwa.x, shrimp.y - suwa.y) < suwa.size) {
+    shrimp.catches++; audio.pop();
+    spawn("sparkle", shrimp.x, shrimp.y, 5);
+    shrimp.x = rand(W * .15, W * .85); shrimp.y = rand(H * .2, H * .6);
+  }
+  if (t > shrimp.until) {
+    shrimp.active = false; suwa.state = "idle";
+    backend.playDone?.(shrimp.catches);
+    toast(`playtime over — ${shrimp.catches} catches!`, "good");
+    audio.chime();
+  }
+}
+
+/* ============================================================ HUD */
+function toast(msg, kind = "") {
+  const el = document.createElement("div");
+  el.className = `toast ${kind}`; el.textContent = msg;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+let lastLevel = -1, lastMood = "";
+function renderHUD(st, t) {
+  $("moodline").textContent = `${st.mood}${backend.demo ? "" : "  ·  on-chain"}`;
+  $("satfill").style.width = `${st.satiety * 100}%`;
+  $("satpct").textContent = `${Math.round(st.satiety * 100)}%`;
+  $("hapfill").style.width = `${st.happiness * 100}%`;
+  $("happct").textContent = `${Math.round(st.happiness * 100)}%`;
+  $("levelchip").textContent = `LV ${st.level}`;
+  const span = st.xpNext - st.xpPrev;
+  $("xpfill").style.width = `${clamp(((st.xp - st.xpPrev) / span) * 100, 0, 100)}%`;
+  $("xpline").textContent = `${st.xp.toLocaleString()} / ${st.xpNext.toLocaleString()} XP`;
+  $("streak").textContent = st.streak > 0 ? `🔥 ${st.streak}-day streak` : "";
+  $("badges").innerHTML = BADGE_ICONS.map((ic, i) =>
+    st.badges & (1 << i) ? `<span title="${BADGE_NAMES[i]}">${ic}</span>` : ""
+  ).join("");
+
+  if (st.mood === "HIBERNATING") $("countdown").textContent = "💤 hibernating — a feed revives it";
+  else if (st.secondsToHibernate > 0) {
+    const s = st.secondsToHibernate, d = Math.floor(s / 86400), h = Math.floor(s / 3600) % 24, min = Math.floor(s / 60) % 60, sec = Math.floor(s) % 60;
+    $("countdown").textContent = `⏳ hibernates in ${d > 0 ? d + "d " : ""}${h}h ${min}m ${sec}s`;
+  } else $("countdown").textContent = "";
+
+  // cooldown overlays
+  for (const [key, btn] of Object.entries(buttons)) {
+    const cd = st.cooldowns[key]; if (!cd) continue;
+    const left = cd.readyAt - t;
+    const overlay = btn.querySelector(".cd");
+    if (left > 0) {
+      overlay.hidden = false;
+      overlay.textContent = left > 3_600_000 ? `${Math.ceil(left / 3_600_000)}h`
+        : left > 60_000 ? `${Math.ceil(left / 60_000)}m` : `${Math.ceil(left / 1000)}s`;
+      btn.disabled = true;
+    } else { overlay.hidden = true; btn.disabled = busy; }
+  }
+
+  if (st.level !== lastLevel) {
+    if (lastLevel >= 0 && st.level > lastLevel) {
+      audio.fanfare(); toast(`⬆ LEVEL ${st.level}!`, "good");
+      for (let i = 0; i < 60; i++) spawn("confetti", suwa.x, suwa.y - 40, 1, { vx: rand(-2.5, 2.5), vy: rand(-3.5, -.5), decay: .008 });
+    }
+    lastLevel = st.level;
+  }
+  if (st.mood !== lastMood) {
+    if (lastMood === "HIBERNATING" && st.mood !== "HIBERNATING") { audio.fanfare(); toast("⚡ it woke up!", "good"); }
+    else if (st.mood === "HIBERNATING" && lastMood) { audio.sad(); toast("💤 it hibernated…", "warn"); }
+    else if (st.mood === "STARVING" && lastMood) { toast("⚠️ it's starving!", "warn"); }
+    lastMood = st.mood;
+  }
+
+  // speech bubble
+  const words = st.lastWords ?? "";
+  const bubble = $("speech");
+  if (words && !backend.demo) {
+    bubble.textContent = `“${words}”`;
+    bubble.style.opacity = .95;
+    bubble.style.left = `${clamp(suwa.x + suwa.size, 10, W - 280)}px`;
+    bubble.style.top = `${clamp(suwa.y - suwa.size * 2.4, 10, H - 120)}px`;
+  } else bubble.style.opacity = 0;
+}
+
+/* ============================================================ actions */
+let backend = demoBackend();
+let busy = false;
+const buttons = { pet: $("btnPet"), play: $("btnPlay"), groom: $("btnGroom"), feed: $("btnFeed") };
+
+async function act(kind) {
+  if (busy) return;
+  busy = true;
+  try {
+    if (kind === "pet") {
+      await backend.pet();
+      suwa.wigglUntil = now() + 900; audio.bloop();
+      spawn("heart", suwa.x, suwa.y - suwa.size, 4);
+    } else if (kind === "play") {
+      const st = backend.state();
+      if (st.mood === "HIBERNATING") { toast("it's hibernating — it can't play", "warn"); return; }
+      await backend.play();
+      startChase(now());
+    } else if (kind === "groom") {
+      await backend.groom(); audio.chime();
+      spawn("sparkle", suwa.x, suwa.y, 10); spawn("bubble", suwa.x, suwa.y, 8);
+      toast("scrubbed the algae off ✨", "good");
+    } else if (kind === "feed") {
+      const moodBefore = await backend.feed();
+      dropFood();
+      if (moodBefore === "HIBERNATING") toast("REVIVAL FEED — 5x XP ⚡", "good");
+      else if (moodBefore === "STARVING") toast("clutch feed — 3x XP 🩹", "good");
+    }
+  } catch (e) {
+    toast(e?.shortMessage ?? e?.message ?? "action failed", "warn");
+  } finally { busy = false; }
+}
+buttons.pet.onclick = () => act("pet");
+buttons.play.onclick = () => act("play");
+buttons.groom.onclick = () => act("groom");
+buttons.feed.onclick = () => act("feed");
+
+// free tactile petting: tapping the creature always wiggles (no gas, no XP)
+canvas.addEventListener("pointerdown", (e) => {
+  audio.ensure();
+  if (Math.hypot(e.clientX - suwa.x, e.clientY - suwa.y) < suwa.size * 1.4) {
+    suwa.wigglUntil = now() + 700; audio.bloop();
+    spawn("heart", suwa.x, suwa.y - suwa.size, 2);
+  } else spawn("bubble", e.clientX, e.clientY, 3);
+});
+
+events.on("badge", (bit) => { toast(`badge earned: ${BADGE_ICONS[bit]} ${BADGE_NAMES[bit]}`, "good"); audio.chime(); });
+events.on("streak", (d) => toast(`🔥 streak day ${d}`, "good"));
+
+/* ============================================================ boot + main loop */
+const cfg = await loadConfig();
+if (cfg?.tomagachi) {
+  try {
+    backend = await chainBackend(cfg);
+    $("statustext").innerHTML = cfg.game
+      ? `SUWA — LIVE ON BASE · <button id="connectbtn">connect wallet</button>`
+      : backend.label;
+    document.getElementById("connectbtn")?.addEventListener("click", () => backend.connect());
+  } catch (e) {
+    console.warn("chain backend failed, staying in demo:", e);
+    $("statustext").textContent = backend.label;
+  }
+} else {
+  $("statustext").textContent = backend.label;
+}
+
+let prev = now();
+function frame(t) {
+  const dt = Math.min(50, t - prev); prev = t;
+  const st = backend.state();
+  suwa.mood = st.mood;
+
+  drawBackground(t, st.mood === "HIBERNATING" || st.mood === "STARVING");
+  updateCreature(t, dt);
+  updateFood(t);
+  drawCreature(t);
+  updateChase(t);
+  drawParticles();
+  renderHUD(st, t);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

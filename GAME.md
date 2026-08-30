@@ -100,6 +100,32 @@ One-time achievements, an on-chain bitmask per player (`playerState().badges`):
 | 6 | 🐋 Whale | 1,000 USDC fed via the game |
 | 7 | 💞 Bestie | 100 care actions |
 
+## The Tank — the playable client
+
+[`web/game.html`](web/game.html) is the actual game: a full-screen animated
+tank with a living creature in it, not a dapp form.
+
+- **A creature that acts alive** — procedurally animated tentacles, eyes that
+  track your pointer, blinking, blushing when petted, mood-driven body
+  language and palettes: it droops when peckish, twitches gray when starving,
+  and sinks to the sea floor with drifting z's when hibernating. Tap it
+  anywhere for a free wiggle (no gas, no XP — just affection).
+- **Actions with juice** — PET throws hearts, FEED drops shrimp it swims to
+  and munches, GROOM showers sparkles and bubbles, PLAY starts the **shrimp
+  chase**: a real minigame where the shrimp follows your pointer and you
+  steer the creature into catches before the timer runs out.
+- **Game feel** — synthesized sound (bloops, munches, level-up fanfares — no
+  audio files), confetti on level-ups, toasts for badges and streaks,
+  cooldown timers on the buttons, a live hibernation countdown, and dramatic
+  wake-up celebration when a feed revives it.
+- **Demo mode by default** — open the page with no wallet and no deployment
+  and the whole tamagotchi runs as a fast local simulation (minutes, not
+  days) so it's immediately playable. Drop `deployment.json` next to it (or
+  pass `?contract=…&game=…`) and it becomes the on-chain client: connect a
+  wallet and PET/PLAY/GROOM/FEED are real transactions against
+  `TomagachiGame`, with cooldowns, XP, level and badges read from Base, and
+  the creature's actual on-chain `lastWords` in its speech bubble.
+
 ## How to play (no front-end required)
 
 Everything is a plain contract call — BaseScan's *Write Contract* tab works:
