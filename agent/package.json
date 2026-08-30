@@ -3,18 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "The brain of the Suwappu Tomagachi \u2014 feeds on stablecoins, buys compute, trains character adapters, and sells them over an OpenAI-compatible endpoint.",
+  "description": "The brain of the Suwappu Tomagachi — feeds on stablecoins, buys compute, trains character adapters, and sells them over an OpenAI-compatible endpoint.",
   "scripts": {
     "compile": "tsx scripts/compile.ts",
     "deploy": "tsx scripts/deploy.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "serve": "tsx src/serve-main.ts"
+    "serve": "tsx src/serve-main.ts",
+    "pretest": "npm run compile",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "viem": "^2.21.0"
   },
   "devDependencies": {
+    "@ethereumjs/evm": "^10.1.3",
     "@types/node": "^22.0.0",
     "solc": "0.8.26",
     "tsx": "^4.19.0",

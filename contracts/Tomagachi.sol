@@ -19,6 +19,8 @@ pragma solidity ^0.8.24;
 ///   vaults (money markets, tokenized T-bills, RWA vaults) and harvests the
 ///   real yield as food. Principal stays recallable compute budget; yield
 ///   raises satiety and mints no NOM — the creature earns its own keep.
+/// - Revenue the shop earns (x402 pay-per-call inference) is eaten through
+///   `earn()`: satiety up, zero NOM — customers are not contributors.
 /// - NOM holders steer the creature: propose and vote on training directions.
 /// ----------------------------------------------------------------------------
 
@@ -135,7 +137,10 @@ contract Tomagachi {
 
     uint256 public totalFed;
     uint256 public totalComputeSpent;
+    uint256 public totalRevenueEarned;    // lifetime inference revenue eaten via earn()
     mapping(address => uint256) public fedBy;
+    address[] public feeders;             // every unique contributor, in order of first feed
+    string public lastWords;              // the creature's most recent speech
 
     struct ComputePurchase {
         uint64 time;
@@ -194,6 +199,7 @@ contract Tomagachi {
     event Invested(address indexed vault, uint256 amount);
     event Divested(address indexed vault, uint256 amount);
     event Harvested(address indexed vault, uint256 yieldAmount, uint256 newSatiety);
+    event Earned(string source, uint256 amount, uint256 newSatiety);
     event Hatched(uint64 time);
     event ComputeBought(uint256 indexed id, address indexed to, uint256 amount, string provider, string jobRef);
     event Checkpointed(uint64 indexed epoch, bytes32 modelHash, string uri, uint256 lossMilli);
@@ -287,6 +293,7 @@ contract Tomagachi {
         if (satietyStored > maxSatiety) satietyStored = maxSatiety;
 
         totalFed += amount;
+        if (fedBy[contributor] == 0) feeders.push(contributor);
         fedBy[contributor] += amount;
 
         // 1 USDC (6dp) => 1 NOM (18dp)
@@ -337,7 +344,23 @@ contract Tomagachi {
 
     /// @notice The creature speaks (the brain relays its words on-chain).
     function speak(string calldata words) external onlyOperator {
+        lastWords = words;
         emit Spoke(words);
+    }
+
+    /// @notice Eat what the creature earned: inference revenue (x402 pay-per-
+    /// call, invoiced routing) settled to the operating wallet and passed in.
+    /// Like harvest, earnings raise satiety and mint NO NOM — customers are
+    /// not contributors, and NOM stays strictly non-revenue-bearing.
+    function earn(uint256 amount, string calldata source) external onlyOperator {
+        require(amount > 0, "earn: zero");
+        require(stable.transferFrom(msg.sender, address(this), amount), "earn: transfer");
+
+        totalRevenueEarned += amount;
+        _metabolize();
+        satietyStored += amount;
+        if (satietyStored > maxSatiety) satietyStored = maxSatiety;
+        emit Earned(source, amount, satietyStored);
     }
 
     // -------------------------------------------------------------- treasury
@@ -471,6 +494,10 @@ contract Tomagachi {
 
     function vaultCount() external view returns (uint256) {
         return vaultList.length;
+    }
+
+    function feederCount() external view returns (uint256) {
+        return feeders.length;
     }
 
     function checkpointCount() external view returns (uint256) {

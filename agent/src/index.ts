@@ -8,6 +8,7 @@
 import { Brain } from "./brain.js";
 import { config } from "./config.js";
 import { startServer } from "./serve.js";
+import { startTelegram } from "./telegram.js";
 
 const banner = String.raw`
   ／|、     SUWAPPU TOMAGACHI
@@ -22,6 +23,9 @@ console.log(banner);
 if (process.env.SERVE !== "0") startServer();
 
 const brain = new Brain();
+
+// The community chat, if configured: /vitals, /treasury, /feed + broadcasts.
+startTelegram(brain.creature);
 
 async function loop() {
   try {

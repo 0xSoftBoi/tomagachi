@@ -23,6 +23,16 @@ import { makeProvider } from "./compute.js";
 import { catalog as characterCatalog } from "./characters.js";
 import { metrics } from "./usage.js";
 import * as suwappu from "./suwappu.js";
+import { peekUnfed, markFed } from "./x402.js";
+import { announce } from "./telegram.js";
+
+/** What the creature posts in the community chat when its mood turns. */
+const MOOD_NEWS: Record<string, string> = {
+  HAPPY: "😊 HAPPY again — belly full, gradients flowing.",
+  PECKISH: "🍽 getting PECKISH — a few USDC keeps the training loop warm.",
+  STARVING: "⚠️ STARVING — hibernation soon. feed me, or hope the farm harvests in time.",
+  HIBERNATING: "💤 hibernated. training halted until someone feeds me — or my own yield wakes me.",
+};
 
 const LINES: Record<string, string[]> = {
   HAPPY: ["*happy gurgle* training epoch soon!", "the reef is warm today. i am learning."],
@@ -41,6 +51,7 @@ export class Brain {
   creature = new Creature();
   provider = makeProvider();
   private busy = false;
+  private lastMood?: string;
 
   async tick(): Promise<void> {
     if (this.busy) return; // a training run is still going
@@ -65,6 +76,9 @@ export class Brain {
         );
       }
 
+      // Revenue first (earn — no NOM), then donations (feedFor — mints NOM):
+      // the two paths must not blur, so the sweep reserves unfed revenue.
+      await this.settleRevenue().catch((e) => console.warn(`[earn] ${e.message}`));
       await this.sweepDonations().catch((e) =>
         console.warn(`[sweep] ${e.message}`)
       );
@@ -77,6 +91,11 @@ export class Brain {
       });
       const mood = harvested ? (await this.creature.vitals()).mood : v.mood;
 
+      if (this.lastMood && mood !== this.lastMood && MOOD_NEWS[mood]) {
+        void announce(MOOD_NEWS[mood]);
+      }
+      this.lastMood = mood;
+
       if (mood === "HIBERNATING" || mood === "EGG") {
         console.log(`[brain] ${say(mood)}`);
         return;
@@ -84,8 +103,8 @@ export class Brain {
 
       const cost = this.provider.priceUsdc;
       // treasury() only exists on contracts deployed with the yield layer, so
-      // fall back to the vitals read on older deployments (no vault set).
-      const liquid = config.yieldVault ? (await this.creature.treasury()).liquid : v.energy;
+      // fall back to the vitals read on older deployments (no vaults set).
+      const liquid = config.yieldVaults.length ? (await this.creature.treasury()).liquid : v.energy;
       if (liquid < config.minEnergyToTrain || liquid < cost) {
         console.log(`[brain] not enough liquid energy to train (${formatUnits(liquid, 6)} USDC)`);
         return;
@@ -98,30 +117,75 @@ export class Brain {
   }
 
   /**
-   * Real-yield treasury: harvest what the vault earned (yield is food), keep
-   * a liquidity buffer for training, and farm everything above it. Principal
-   * never leaves the creature — it moves between liquid and invested.
-   * Returns true if a harvest landed (satiety changed).
+   * Real-yield treasury across a fleet of vaults.
+   *
+   * Each tick: sample every vault's share price (the drift is its trailing
+   * APY), harvest everything earned above principal (yield is food), then
+   * allocate — keep a liquidity buffer for training, send excess to the
+   * best-APY vault, recall principal when liquidity runs short, and move
+   * principal out of a laggard when the best vault beats it by
+   * REBALANCE_MIN_BPS. Principal never leaves the creature; it only moves
+   * between liquid and invested. Returns true if a harvest landed.
    */
   async manageTreasury(): Promise<boolean> {
-    const vault = config.yieldVault;
-    if (!vault) return false;
-    if (!(await this.creature.vaultAllowed(vault))) {
-      console.warn(`[treasury] ${vault} not whitelisted — owner must call allowVault`);
-      return false;
-    }
+    const vaults = config.yieldVaults;
+    if (!vaults.length) return false;
+
+    const state = loadState();
+    state.vaultSamples ??= {};
+    const now = Date.now();
+    const yearMs = 365 * 24 * 3600 * 1000;
 
     let harvested = false;
-    const pos = await this.creature.vaultPosition(vault);
-    const pending = pos.value > pos.principal ? pos.value - pos.principal : 0n;
-    if (pending >= config.harvestMinUsdc) {
-      const h = await this.creature.harvest(vault);
-      console.log(`[treasury] harvested ${formatUnits(pending, 6)} USDC of yield: ${h}`);
-      await this.creature
-        .speak(`harvested ${formatUnits(pending, 6)} USDC of real yield. i farm, therefore i am fed.`)
-        .catch(() => {});
-      harvested = true;
+    const allowed: `0x${string}`[] = [];
+    const apy: Record<string, number> = {};
+    const positions: Record<string, { value: bigint; principal: bigint }> = {};
+
+    for (const vault of vaults) {
+      if (!(await this.creature.vaultAllowed(vault))) {
+        console.warn(`[treasury] ${vault} not whitelisted — owner must call allowVault`);
+        continue;
+      }
+      allowed.push(vault);
+
+      // Trailing APY from share-price drift; one sample an hour, a week kept.
+      const pps = await this.creature.vaultSharePrice(vault);
+      const samples = (state.vaultSamples[vault] ??= []);
+      const last = samples[samples.length - 1];
+      if (!last || now - last.t >= 3_600_000) {
+        samples.push({ t: now, ppsE12: pps.toString() });
+        if (samples.length > 168) samples.shift();
+      }
+      const first = samples[0];
+      if (first && now > first.t && BigInt(first.ppsE12) > 0n) {
+        const growth = Number(pps) / Number(BigInt(first.ppsE12)) - 1;
+        apy[vault] = growth * (yearMs / (now - first.t));
+      }
+
+      const pos = await this.creature.vaultPosition(vault);
+      positions[vault] = pos;
+      const pending = pos.value > pos.principal ? pos.value - pos.principal : 0n;
+      if (pending >= config.harvestMinUsdc) {
+        const h = await this.creature.harvest(vault);
+        console.log(`[treasury] harvested ${formatUnits(pending, 6)} USDC from ${vault}: ${h}`);
+        await this.creature
+          .speak(`harvested ${formatUnits(pending, 6)} USDC of real yield. i farm, therefore i am fed.`)
+          .catch(() => {});
+        void announce(`🌾 harvested ${formatUnits(pending, 6)} USDC of real yield — fed myself.`);
+        harvested = true;
+      }
     }
+    saveState(state);
+    if (!allowed.length) return harvested;
+
+    const best = allowed.reduce((a, b) => ((apy[b] ?? -1) > (apy[a] ?? -1) ? b : a));
+    console.log(
+      `[treasury] apy: ` +
+        allowed
+          .map((v) => `${v.slice(0, 8)}=${apy[v] !== undefined ? (apy[v] * 100).toFixed(2) + "%" : "?"}`)
+          .join(" ") +
+        ` → allocating to ${best.slice(0, 8)}`
+    );
 
     // The liquidity buffer can never sit below the training threshold.
     const target =
@@ -132,13 +196,32 @@ export class Brain {
     const t = await this.creature.treasury();
     if (t.liquid > target) {
       const excess = t.liquid - target;
-      const h = await this.creature.invest(vault, excess);
-      console.log(`[treasury] farmed ${formatUnits(excess, 6)} idle USDC into ${vault}: ${h}`);
+      const h = await this.creature.invest(best, excess);
+      console.log(`[treasury] farmed ${formatUnits(excess, 6)} idle USDC into ${best}: ${h}`);
     } else if (t.liquid < config.minEnergyToTrain && t.principal > 0n) {
+      // Recall from the worst-performing funded vault first.
+      const funded = allowed.filter((v) => positions[v].principal > 0n);
+      const worst = funded.reduce((a, b) => ((apy[b] ?? -1) < (apy[a] ?? -1) ? b : a));
       const shortfall = target - t.liquid;
-      const recall = shortfall < t.principal ? shortfall : t.principal;
-      const h = await this.creature.divest(vault, recall);
-      console.log(`[treasury] recalled ${formatUnits(recall, 6)} USDC of principal: ${h}`);
+      const p = positions[worst].principal;
+      const recall = shortfall < p ? shortfall : p;
+      const h = await this.creature.divest(worst, recall);
+      console.log(`[treasury] recalled ${formatUnits(recall, 6)} USDC from ${worst}: ${h}`);
+    }
+
+    // One rebalance per tick, and only when the spread pays for the gas.
+    for (const v of allowed) {
+      if (v === best) continue;
+      const p = positions[v].principal;
+      if (p === 0n || apy[v] === undefined || apy[best] === undefined) continue;
+      if ((apy[best] - apy[v]) * 10_000 >= config.rebalanceMinBps) {
+        await this.creature.divest(v, p);
+        const h = await this.creature.invest(best, p);
+        console.log(
+          `[treasury] rebalanced ${formatUnits(p, 6)} USDC ${v.slice(0, 8)} → ${best.slice(0, 8)}: ${h}`
+        );
+        break;
+      }
     }
     return harvested;
   }
@@ -191,12 +274,32 @@ export class Brain {
       console.log(`[sweep] swapped via suwappu: ${swapHash}`);
     }
 
-    // Any USDC now in the wallet is food. Contributor = operator = community pool.
+    // Any USDC now in the wallet is food — minus settled x402 revenue still
+    // waiting for earn(), which is NOT a donation and must not mint NOM.
+    const reserved = peekUnfed();
     const usdcBal = await this.creature.walletBalance(this.creature.deployment.usdc);
-    if (usdcBal > 0n) {
-      const h = await this.creature.feedFor(this.creature.account.address, usdcBal);
-      console.log(`[feed] fed ${formatUnits(usdcBal, 6)} USDC to the creature: ${h}`);
+    const feedable = usdcBal > reserved ? usdcBal - reserved : 0n;
+    if (feedable > 0n) {
+      const h = await this.creature.feedFor(this.creature.account.address, feedable);
+      console.log(`[feed] fed ${formatUnits(feedable, 6)} USDC to the creature: ${h}`);
     }
+  }
+
+  /** Pass settled x402 revenue to the contract: pay-per-call becomes food. */
+  async settleRevenue(): Promise<void> {
+    const unfed = peekUnfed();
+    if (unfed < config.earnMinUsdc) return;
+    const walletUsdc = await this.creature.walletBalance(this.creature.deployment.usdc);
+    const amount = unfed < walletUsdc ? unfed : walletUsdc;
+    if (amount === 0n) return;
+
+    const h = await this.creature.earn(amount, "x402");
+    markFed(amount);
+    console.log(`[earn] ate ${formatUnits(amount, 6)} USDC of x402 revenue: ${h}`);
+    void announce(`💰 ate ${formatUnits(amount, 6)} USDC of pay-per-call revenue. honest work.`);
+    await this.creature
+      .speak(`ate ${formatUnits(amount, 6)} USDC i earned selling inference. delicious, honest work.`)
+      .catch(() => {});
   }
 
   /** Which SKU this epoch belongs to: round-robin, so the fleet grows evenly. */
@@ -268,5 +371,9 @@ export class Brain {
         `i am a little more myself.`
       : `epoch ${epoch} complete. loss ${reportedLoss.toFixed(3)}. i dream a little sharper now.`;
     await this.creature.speak(words).catch(() => {});
+    void announce(
+      `🧠 epoch ${epoch}${character ? ` (${character})` : ""} trained — ` +
+        `sha256 ${result.manifest.sha256.slice(0, 12)}… on-chain, $${formatUnits(cost, 6)} of compute.`
+    );
   }
 }

@@ -109,6 +109,29 @@ export class Creature {
     return this.write("feedFor", [contributor, amount]);
   }
 
+  /** Approve USDC (if needed) and pass earned revenue to the contract: food
+   *  the creature worked for. Mints no NOM. */
+  async earn(amount: bigint, source: string): Promise<`0x${string}`> {
+    const allowance = await this.client.readContract({
+      address: this.deployment.usdc,
+      abi: erc20Abi,
+      functionName: "allowance",
+      args: [this.account.address, this.deployment.tomagachi],
+    });
+    if (allowance < amount) {
+      const { request } = await this.client.simulateContract({
+        address: this.deployment.usdc,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [this.deployment.tomagachi, amount * 1000n],
+        account: this.account,
+      });
+      const hash = await this.wallet.writeContract(request);
+      await this.client.waitForTransactionReceipt({ hash });
+    }
+    return this.write("earn", [amount, source]);
+  }
+
   async buyCompute(
     to: `0x${string}`,
     amount: bigint,
@@ -184,6 +207,16 @@ export class Creature {
       args: [vault],
     })) as bigint;
     return { value, principal };
+  }
+
+  /** Assets per 1e12 shares — the ratio's drift over time is the vault's APY. */
+  async vaultSharePrice(vault: `0x${string}`): Promise<bigint> {
+    return (await this.client.readContract({
+      address: vault,
+      abi: erc4626Abi,
+      functionName: "convertToAssets",
+      args: [10n ** 12n],
+    })) as bigint;
   }
 
   async invest(vault: `0x${string}`, amount: bigint): Promise<`0x${string}`> {

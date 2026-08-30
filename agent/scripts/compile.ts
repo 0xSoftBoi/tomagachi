@@ -12,11 +12,16 @@ const solc = require("solc");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
-const source = readFileSync(join(root, "contracts", "Tomagachi.sol"), "utf8");
+
+// The real contract plus the test doubles the EVM test suite deploys.
+const sources: Record<string, { content: string }> = {
+  "Tomagachi.sol": { content: readFileSync(join(root, "contracts", "Tomagachi.sol"), "utf8") },
+  "Mocks.sol": { content: readFileSync(join(root, "contracts", "test", "Mocks.sol"), "utf8") },
+};
 
 const input = {
   language: "Solidity",
-  sources: { "Tomagachi.sol": { content: source } },
+  sources,
   settings: {
     optimizer: { enabled: true, runs: 500 },
     outputSelection: { "*": { "*": ["abi", "evm.bytecode.object"] } },
@@ -35,15 +40,17 @@ if (errors.length) {
 const outDir = join(here, "..", "artifacts");
 mkdirSync(outDir, { recursive: true });
 
-for (const [name, artifact] of Object.entries<any>(output.contracts["Tomagachi.sol"])) {
-  writeFileSync(
-    join(outDir, `${name}.json`),
-    JSON.stringify(
-      { abi: artifact.abi, bytecode: "0x" + artifact.evm.bytecode.object },
-      null,
-      2
-    )
-  );
-  console.log(`artifact: artifacts/${name}.json`);
+for (const file of Object.keys(sources)) {
+  for (const [name, artifact] of Object.entries<any>(output.contracts[file] ?? {})) {
+    writeFileSync(
+      join(outDir, `${name}.json`),
+      JSON.stringify(
+        { abi: artifact.abi, bytecode: "0x" + artifact.evm.bytecode.object },
+        null,
+        2
+      )
+    );
+    console.log(`artifact: artifacts/${name}.json`);
+  }
 }
 console.log("compiled OK");

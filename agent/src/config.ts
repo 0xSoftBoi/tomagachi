@@ -82,12 +82,41 @@ export const config = {
   // Idle USDC is farmed in an owner-whitelisted ERC-4626 vault; harvested
   // yield is food the creature earns itself. See contracts/Tomagachi.sol.
 
-  /** ERC-4626 USDC vault to farm. Unset => treasury management off. */
-  yieldVault: process.env.YIELD_VAULT as `0x${string}` | undefined,
+  /**
+   * ERC-4626 USDC vaults to farm, comma separated. The brain samples each
+   * vault's share price, computes trailing APY, sends new capital to the best
+   * one and rebalances when the spread justifies the gas. Empty => off.
+   */
+  yieldVaults: (process.env.YIELD_VAULTS ?? process.env.YIELD_VAULT ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean) as `0x${string}`[],
+  /** Move principal between vaults only when best APY beats funded APY by this many bps. */
+  rebalanceMinBps: Number(process.env.REBALANCE_MIN_BPS ?? 200),
   /** Keep at least this much USDC liquid (6dp) before farming the rest. */
   liquidTargetUsdc: BigInt(process.env.LIQUID_TARGET_USDC ?? String(25_000_000)), // 25 USDC
   /** Don't harvest until pending yield reaches this (6dp) — saves gas. */
   harvestMinUsdc: BigInt(process.env.HARVEST_MIN_USDC ?? String(1_000_000)), // 1 USDC
+
+  // --- telegram front-end (src/telegram.ts) -----------------------------
+
+  /** Bot token from @BotFather. Unset => no Telegram. */
+  telegramToken: process.env.TELEGRAM_BOT_TOKEN,
+  /** Chat/channel id for proactive broadcasts (mood changes, harvests, epochs). */
+  telegramChatId: process.env.TELEGRAM_CHAT_ID,
+
+  // --- x402 pay-per-call (src/x402.ts) ----------------------------------
+  // Keyless callers pay per request with signed EIP-3009 USDC transfers;
+  // settled revenue is eaten by the contract via earn(). Revenue is food.
+
+  x402Enabled: process.env.X402 === "1",
+  /** USDC (6dp) per request. $0.01 default. */
+  x402PriceUsdc: BigInt(process.env.X402_PRICE_USDC ?? "10000"),
+  /** EIP-712 domain of the USDC deployment being settled against. */
+  x402UsdcName: process.env.X402_USDC_NAME ?? "USD Coin",
+  x402UsdcVersion: process.env.X402_USDC_VERSION ?? "2",
+  /** Don't call earn() until settled revenue reaches this (6dp) — gas hygiene. */
+  earnMinUsdc: BigInt(process.env.EARN_MIN_USDC ?? String(1_000_000)), // 1 USDC
 
   /** Tokens the brain will sweep from donations and swap to USDC via Suwappu. */
   sweepTokens: (process.env.SWEEP_TOKENS ?? "WETH,DEGEN,AERO")
