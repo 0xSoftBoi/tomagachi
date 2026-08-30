@@ -11,6 +11,8 @@
  *   USDC           optional — stablecoin address override
  *   RPC_URL        optional — RPC override
  *   CREATURE_NAME  optional — default "Suwa"
+ *   YIELD_VAULTS   optional — comma-separated ERC-4626 USDC vaults to
+ *                  whitelist right away (the brain farms idle treasury there)
  */
 import { createWalletClient, createPublicClient, http, parseUnits } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -72,6 +74,23 @@ const nom = await client.readContract({
   functionName: "nom",
 });
 console.log(`NOM token: ${nom}`);
+
+// Whitelist any yield vaults up front so the brain can start farming
+// idle treasury on its first tick. The contract rejects non-USDC vaults.
+const yieldVaults = (process.env.YIELD_VAULTS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean) as `0x${string}`[];
+for (const vault of yieldVaults) {
+  const h = await wallet.writeContract({
+    address,
+    abi: artifact.abi,
+    functionName: "allowVault",
+    args: [vault, true],
+  });
+  await client.waitForTransactionReceipt({ hash: h });
+  console.log(`allowed yield vault: ${vault}`);
+}
 
 const out = {
   chain: chainKey,

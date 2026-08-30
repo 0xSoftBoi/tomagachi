@@ -69,14 +69,25 @@ export class Brain {
         console.warn(`[sweep] ${e.message}`)
       );
 
-      if (v.mood === "HIBERNATING" || v.mood === "EGG") {
-        console.log(`[brain] ${say(v.mood)}`);
+      // Farm before the mood check: a harvest raises satiety, so real yield
+      // can wake a hibernating creature all by itself.
+      const harvested = await this.manageTreasury().catch((e) => {
+        console.warn(`[treasury] ${e.message}`);
+        return false;
+      });
+      const mood = harvested ? (await this.creature.vitals()).mood : v.mood;
+
+      if (mood === "HIBERNATING" || mood === "EGG") {
+        console.log(`[brain] ${say(mood)}`);
         return;
       }
 
       const cost = this.provider.priceUsdc;
-      if (v.energy < config.minEnergyToTrain || v.energy < cost) {
-        console.log(`[brain] not enough energy to train (${formatUnits(v.energy, 6)} USDC)`);
+      // treasury() only exists on contracts deployed with the yield layer, so
+      // fall back to the vitals read on older deployments (no vault set).
+      const liquid = config.yieldVault ? (await this.creature.treasury()).liquid : v.energy;
+      if (liquid < config.minEnergyToTrain || liquid < cost) {
+        console.log(`[brain] not enough liquid energy to train (${formatUnits(liquid, 6)} USDC)`);
         return;
       }
 
@@ -84,6 +95,52 @@ export class Brain {
     } finally {
       this.busy = false;
     }
+  }
+
+  /**
+   * Real-yield treasury: harvest what the vault earned (yield is food), keep
+   * a liquidity buffer for training, and farm everything above it. Principal
+   * never leaves the creature — it moves between liquid and invested.
+   * Returns true if a harvest landed (satiety changed).
+   */
+  async manageTreasury(): Promise<boolean> {
+    const vault = config.yieldVault;
+    if (!vault) return false;
+    if (!(await this.creature.vaultAllowed(vault))) {
+      console.warn(`[treasury] ${vault} not whitelisted — owner must call allowVault`);
+      return false;
+    }
+
+    let harvested = false;
+    const pos = await this.creature.vaultPosition(vault);
+    const pending = pos.value > pos.principal ? pos.value - pos.principal : 0n;
+    if (pending >= config.harvestMinUsdc) {
+      const h = await this.creature.harvest(vault);
+      console.log(`[treasury] harvested ${formatUnits(pending, 6)} USDC of yield: ${h}`);
+      await this.creature
+        .speak(`harvested ${formatUnits(pending, 6)} USDC of real yield. i farm, therefore i am fed.`)
+        .catch(() => {});
+      harvested = true;
+    }
+
+    // The liquidity buffer can never sit below the training threshold.
+    const target =
+      config.liquidTargetUsdc > config.minEnergyToTrain
+        ? config.liquidTargetUsdc
+        : config.minEnergyToTrain;
+
+    const t = await this.creature.treasury();
+    if (t.liquid > target) {
+      const excess = t.liquid - target;
+      const h = await this.creature.invest(vault, excess);
+      console.log(`[treasury] farmed ${formatUnits(excess, 6)} idle USDC into ${vault}: ${h}`);
+    } else if (t.liquid < config.minEnergyToTrain && t.principal > 0n) {
+      const shortfall = target - t.liquid;
+      const recall = shortfall < t.principal ? shortfall : t.principal;
+      const h = await this.creature.divest(vault, recall);
+      console.log(`[treasury] recalled ${formatUnits(recall, 6)} USDC of principal: ${h}`);
+    }
+    return harvested;
   }
 
   /** Swap donated tokens in the operator wallet to USDC via Suwappu, then feed. */

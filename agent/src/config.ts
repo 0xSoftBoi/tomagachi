@@ -78,6 +78,17 @@ export const config = {
   hfRepo: process.env.HF_REPO, // e.g. "suwappu/suwa-wm"
   hfToken: process.env.HF_TOKEN,
 
+  // --- real-yield treasury ----------------------------------------------
+  // Idle USDC is farmed in an owner-whitelisted ERC-4626 vault; harvested
+  // yield is food the creature earns itself. See contracts/Tomagachi.sol.
+
+  /** ERC-4626 USDC vault to farm. Unset => treasury management off. */
+  yieldVault: process.env.YIELD_VAULT as `0x${string}` | undefined,
+  /** Keep at least this much USDC liquid (6dp) before farming the rest. */
+  liquidTargetUsdc: BigInt(process.env.LIQUID_TARGET_USDC ?? String(25_000_000)), // 25 USDC
+  /** Don't harvest until pending yield reaches this (6dp) — saves gas. */
+  harvestMinUsdc: BigInt(process.env.HARVEST_MIN_USDC ?? String(1_000_000)), // 1 USDC
+
   /** Tokens the brain will sweep from donations and swap to USDC via Suwappu. */
   sweepTokens: (process.env.SWEEP_TOKENS ?? "WETH,DEGEN,AERO")
     .split(",")

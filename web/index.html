@@ -53,10 +53,11 @@
 <main>
   <h1>Suwappu Tomagachi</h1>
   <p class="sub">
-    An on-chain creature on Base. It eats stablecoins, buys decentralized
-    compute, and trains <a href="https://github.com/0xSoftBoi/tomagachi">SUWA-WM</a>,
-    an open-source world model, for everyone. Feeding mints NOM — your vote on
-    what it learns next.
+    An on-chain creature on Base. It eats stablecoins, farms its idle treasury
+    for <b>real DeFi yield</b>, buys decentralized compute, and trains
+    <a href="https://github.com/0xSoftBoi/tomagachi">open character models</a>
+    for everyone. Feeding mints NOM — your vote on what it learns next. Yield
+    it harvests is food it earned itself.
   </p>
 
   <div class="tank">
@@ -71,6 +72,9 @@
       <div class="stat"><b id="fed">–</b><span>USDC fed</span></div>
       <div class="stat"><b id="spent">–</b><span>USDC → compute</span></div>
       <div class="stat"><b id="epochs">–</b><span>epochs trained</span></div>
+      <div class="stat"><b id="liquid">–</b><span>USDC liquid</span></div>
+      <div class="stat"><b id="farming">–</b><span>USDC farming</span></div>
+      <div class="stat"><b id="yield">–</b><span>yield harvested</span></div>
     </div>
   </div>
 
@@ -79,9 +83,12 @@
     <div class="feedbox" id="feedbox">
       1. Approve USDC to the creature, then call <code>feed(amount)</code> on
       <span class="addr" id="addr">…</span><br />
-      2. Or send any Base token to the brain wallet — it swaps to USDC via
-      <a href="https://suwappu.bot">Suwappu</a> and feeds itself.<br />
-      3. Every USDC fed mints 1 NOM: propose &amp; vote on training directions.
+      2. Or send any Base token — yes, your memecoin — to the brain wallet; it
+      swaps to USDC via <a href="https://suwappu.bot">Suwappu</a> and feeds itself.<br />
+      3. Every USDC fed mints 1 NOM: propose &amp; vote on training directions.<br />
+      4. Idle USDC is farmed in an ERC-4626 vault. Harvested yield feeds the
+      creature — real yield, on-chain, and it can even wake itself from
+      hibernation with it.
     </div>
   </section>
 
@@ -106,6 +113,9 @@ const ABI = [
     { name: "fed", type: "uint256" }, { name: "spent", type: "uint256" }, { name: "epochs", type: "uint256" }] },
   { name: "maxSatiety", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { name: "checkpointCount", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { name: "treasury", type: "function", stateMutability: "view", inputs: [], outputs: [
+    { name: "liquid", type: "uint256" }, { name: "invested", type: "uint256" },
+    { name: "principal", type: "uint256" }, { name: "yieldEarned", type: "uint256" }] },
   { name: "checkpoints", type: "function", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [
     { name: "time", type: "uint64" }, { name: "epoch", type: "uint64" }, { name: "modelHash", type: "bytes32" },
     { name: "uri", type: "string" }, { name: "lossMilli", type: "uint256" }, { name: "computeSpent", type: "uint256" }] },
@@ -156,6 +166,15 @@ if (!cfg?.tomagachi) {
       $("fed").textContent = Number(formatUnits(fed, 6)).toLocaleString();
       $("spent").textContent = Number(formatUnits(spent, 6)).toLocaleString();
       $("epochs").textContent = epochs.toString();
+
+      // treasury() only exists on contracts deployed with the yield layer
+      try {
+        const [liquid, invested, , yieldEarned] =
+          await client.readContract({ ...c, functionName: "treasury" });
+        $("liquid").textContent = Number(formatUnits(liquid, 6)).toLocaleString();
+        $("farming").textContent = Number(formatUnits(invested, 6)).toLocaleString();
+        $("yield").textContent = Number(formatUnits(yieldEarned, 6)).toLocaleString();
+      } catch { /* pre-yield deployment: leave the dashes */ }
 
       const n = await client.readContract({ ...c, functionName: "checkpointCount" });
       const rows = [];

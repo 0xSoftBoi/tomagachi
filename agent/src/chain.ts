@@ -7,6 +7,7 @@ import {
   createWalletClient,
   http,
   erc20Abi,
+  parseAbi,
   type PublicClient,
   type WalletClient,
   type Account,
@@ -22,6 +23,11 @@ const artifact = JSON.parse(
   readFileSync(join(agentDir, "artifacts", "Tomagachi.json"), "utf8")
 );
 export const tomagachiAbi = artifact.abi;
+
+const erc4626Abi = parseAbi([
+  "function balanceOf(address) view returns (uint256)",
+  "function convertToAssets(uint256) view returns (uint256)",
+]);
 
 export const MOODS = ["EGG", "HAPPY", "PECKISH", "STARVING", "HIBERNATING"] as const;
 export type MoodName = (typeof MOODS)[number];
@@ -124,6 +130,72 @@ export class Creature {
 
   async speak(words: string): Promise<`0x${string}`> {
     return this.write("speak", [words]);
+  }
+
+  // --- real-yield treasury ------------------------------------------------
+
+  /** The whole balance sheet: liquid, invested, principal, lifetime yield. */
+  async treasury(): Promise<{
+    liquid: bigint;
+    invested: bigint;
+    principal: bigint;
+    yieldEarned: bigint;
+  }> {
+    const [liquid, invested, principal, yieldEarned] = (await this.client.readContract({
+      address: this.deployment.tomagachi,
+      abi: tomagachiAbi,
+      functionName: "treasury",
+    })) as [bigint, bigint, bigint, bigint];
+    return { liquid, invested, principal, yieldEarned };
+  }
+
+  async vaultAllowed(vault: `0x${string}`): Promise<boolean> {
+    return this.client.readContract({
+      address: this.deployment.tomagachi,
+      abi: tomagachiAbi,
+      functionName: "allowedVault",
+      args: [vault],
+    }) as Promise<boolean>;
+  }
+
+  /** Marked value + tracked principal of the creature's position in a vault. */
+  async vaultPosition(
+    vault: `0x${string}`
+  ): Promise<{ value: bigint; principal: bigint }> {
+    const shares = (await this.client.readContract({
+      address: vault,
+      abi: erc4626Abi,
+      functionName: "balanceOf",
+      args: [this.deployment.tomagachi],
+    })) as bigint;
+    const value =
+      shares === 0n
+        ? 0n
+        : ((await this.client.readContract({
+            address: vault,
+            abi: erc4626Abi,
+            functionName: "convertToAssets",
+            args: [shares],
+          })) as bigint);
+    const principal = (await this.client.readContract({
+      address: this.deployment.tomagachi,
+      abi: tomagachiAbi,
+      functionName: "principalOf",
+      args: [vault],
+    })) as bigint;
+    return { value, principal };
+  }
+
+  async invest(vault: `0x${string}`, amount: bigint): Promise<`0x${string}`> {
+    return this.write("invest", [vault, amount]);
+  }
+
+  async divest(vault: `0x${string}`, amount: bigint): Promise<`0x${string}`> {
+    return this.write("divest", [vault, amount]);
+  }
+
+  async harvest(vault: `0x${string}`): Promise<`0x${string}`> {
+    return this.write("harvest", [vault]);
   }
 
   /** ERC-20 balance of the operator wallet (donation inbox). */
