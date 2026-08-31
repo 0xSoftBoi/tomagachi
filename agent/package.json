@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "serve": "tsx src/serve-main.ts",
     "pretest": "npm run compile",
-    "test": "tsx --test test/*.test.ts",
+    "test": "STATE_DIR=./test/state tsx --test test/*.test.ts",
     "smoke": "node test/tank-smoke.mjs"
   },
   "dependencies": {

@@ -42,7 +42,12 @@ autonomous agent that turns every token you feed it into training compute.
   callers pay per request with **x402** — HTTP 402, a signed EIP-3009 USDC
   authorization, settled on Base before the tokens stream — and the brain
   passes settled revenue to the contract via `earn()`: satiety up, zero NOM.
-  Revenue is food, so a creature with customers stops starving.
+  Revenue is food, so a creature with customers stops starving. Per-session
+  memory (`agent/src/memory.ts`) is categorized — identity, preference,
+  explicit "remember this" — rather than one flat list, and the composed
+  prompt explicitly tells the model not to contradict or recite the memory
+  back (grounded in real persona-memory research; see
+  [`research/technical-references.md`](research/technical-references.md)).
 - **It farms.** Idle USDC doesn't nap in the belly — the brain parks it across
   owner-whitelisted **ERC-4626 vaults** (money markets, tokenized T-bill funds,
   RWA vaults) via `invest`/`divest`/`harvest`, sampling each vault's share

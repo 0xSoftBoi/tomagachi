@@ -15,10 +15,16 @@ relevant items didn't survive that check and are recorded below as what they act
 2. **`contracts/TomagachiGame.sol`** — a streak-freeze grace charge: missing exactly one day
    spends a banked charge instead of resetting the streak to 1. Charges are earned back every
    7-day streak milestone, capped at 2 held at once.
+3. **`agent/src/memory.ts` / `serve.ts`** (a follow-up pass, once the S-LoRA and memory
+   directions below were flagged as "informing, not yet implemented" — the memory one turned out
+   to be well-scoped enough to just do) — session memory is now categorized (identity /
+   preference / note) with independent per-category caps instead of one flat, recency-only list,
+   and the composed system message explicitly instructs the model not to contradict or recite the
+   memory back. See §4 below for the citation.
 
-Both are covered by new EVM tests (`agent/test/tomagachi.test.ts`, `agent/test/game.test.ts`) —
-17/17 passing — and don't change the shape of anything else: NOM minting, the metabolism, and the
-zero-admin/zero-custody posture of the game are untouched.
+All three are covered by new tests (`agent/test/tomagachi.test.ts`, `agent/test/game.test.ts`,
+`agent/test/memory.test.ts`) — 23/23 passing — and don't change the shape of anything else: NOM
+minting, the metabolism, and the zero-admin/zero-custody posture of the game are untouched.
 
 ## 1. DeFi vault curation and concentration risk — directly actionable
 
@@ -94,7 +100,7 @@ about "future" submissions.
   utilization against the unit-economics model first (`research/unit_economics.py`) — worth a
   follow-up research task, not a blind swap.
 
-## 4. Persona memory in long roleplay sessions — informs, not yet implemented
+## 4. Persona memory in long roleplay sessions — implemented in the follow-up pass
 
 - **Wang, You, Zhang & Wang, "Memory-Driven Role-Playing: Evaluation and Enhancement of Persona
   Knowledge Utilization in LLMs"** ([arXiv:2603.19313](https://arxiv.org/abs/2603.19313), March
@@ -102,13 +108,31 @@ about "future" submissions.
   knowledge as something a model must *retrieve and apply* from memory rather than lean on
   explicit reminders, with a four-part evaluation (Anchoring, Recalling, Bounding, Enacting) and a
   prompting method (MRPrompt) that let a smaller model (Qwen3-8B) match much larger models'
-  persona fidelity. Directly relevant to `agent/src/memory.ts` and `serve.ts`'s `composeMessages`,
-  which currently appends a flat "what you already know about this person" list — the paper's
-  structured retrieval framing is a concrete upgrade path for the "memory layer v2" roadmap item,
-  and the smaller-model finding matters directly for unit economics (persona quality without
-  needing a bigger, more expensive base model). **Not implemented in this pass** — this is a
-  genuine architecture change to the memory/prompting pipeline, not a small tweak, and deserves
-  its own design pass rather than a blind swap under an unrelated task.
+  persona fidelity — directly relevant to unit economics (persona quality without needing a
+  bigger, more expensive base model).
+
+  Originally flagged here as "not yet implemented — a genuine architecture change, not a small
+  tweak." On revisiting, the well-scoped slice of it (structured categorization + an explicit
+  non-leak instruction) turned out to be a bounded, independently testable change after all,
+  distinct from the bigger, riskier slice (an actual summarizer model call, which is still not
+  done — see below). What shipped:
+
+  - `agent/src/memory.ts`: facts are now tagged `identity` / `preference` / `note` at extraction
+    time, each with its own retention cap, so a long run of "I like X" turns can no longer evict
+    the name/occupation facts that anchor who the model is talking to (the paper's *Anchoring*).
+  - A new `formatMemoryForPrompt` builds the injected system message with per-category framing
+    ("Who they are" / "Their tastes" / "They specifically asked you to remember") and an explicit
+    instruction not to contradict the memory or recite it back — operationalizing *Bounding*
+    (stay consistent, don't leak the mechanism) and *Enacting* (use it as lived knowledge, not a
+    checklist) rather than trusting the model to infer both from a flat fact list.
+  - An old-shape `sessions.json` (plain string facts, pre-categorization) migrates into the `note`
+    bucket on load instead of throwing — a real deployment could have live session data before a
+    redeploy, and a crash on read is worse than a mis-bucketed fact.
+
+  **Still not done, and still the bigger lift**: replacing pattern-extraction with an actual
+  summarizer call (the paper's *Recalling* as a learned retrieval rather than regex matching) is
+  the "Phase 2" already named in `memory.ts`'s header — that needs a model call in the hot path
+  and its own latency/cost budget, not a prompt-shape change.
 
 ## 5. World models — informs the "dream," no action taken
 

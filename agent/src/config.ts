@@ -186,7 +186,8 @@ export const config = {
    */
   complianceZdr: process.env.COMPLIANCE_ZDR === "1",
 
-  stateDir: join(agentDir, "state"),
+  /** Override for containerized deployments (or a scratch dir in tests). */
+  stateDir: process.env.STATE_DIR ?? join(agentDir, "state"),
   runsDir: join(repoRoot, "runs"),
   modelDir: join(repoRoot, "model"),
 };

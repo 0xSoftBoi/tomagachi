@@ -24,7 +24,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { config } from "./config.js";
 import { catalog, findCharacter, type Character } from "./characters.js";
 import { metrics, record } from "./usage.js";
-import { recall, remember } from "./memory.js";
+import { recall, remember, formatMemoryForPrompt } from "./memory.js";
 import { providerManifest } from "./provider-manifest.js";
 import {
   x402Available,
@@ -78,6 +78,10 @@ function sessionId(req: IncomingMessage, body: ChatRequest): string | undefined 
  * If the caller sent its own system prompt it is driving the character, so we
  * keep it and add our consistency rules behind it. If it sent none, the
  * character speaks in full. SUWA_PERSONA=off serves the adapter bare.
+ *
+ * Session memory (memory.ts) is injected as its own system message, already
+ * formatted with per-category framing and an explicit instruction not to
+ * contradict or recite it back — see formatMemoryForPrompt.
  */
 function composeMessages(character: Character, body: ChatRequest, session?: string): ChatMessage[] {
   if (config.personaMode === "off") return body.messages;
@@ -98,12 +102,9 @@ function composeMessages(character: Character, body: ChatRequest, session?: stri
     head.push({ role: "system", content: character.system });
   }
 
-  const memory = session ? recall(session) : [];
-  if (memory.length) {
-    head.push({
-      role: "system",
-      content: "What you already know about this person:\n" + memory.map((m) => `- ${m}`).join("\n"),
-    });
+  const memoryBlock = session ? formatMemoryForPrompt(recall(session)) : undefined;
+  if (memoryBlock) {
+    head.push({ role: "system", content: memoryBlock });
   }
   return [...head, ...rest];
 }
