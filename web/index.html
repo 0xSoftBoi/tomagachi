@@ -186,7 +186,7 @@ const GAME_ABI = [
   { name: "playerState", type: "function", stateMutability: "view", inputs: [{ type: "address" }], outputs: [
     { name: "xp", type: "uint128" }, { name: "streakDays", type: "uint32" }, { name: "careActions", type: "uint32" },
     { name: "badges", type: "uint32" }, { name: "fedViaGame", type: "uint128" }, { name: "nextPetAt", type: "uint64" },
-    { name: "nextPlayAt", type: "uint64" }, { name: "nextGroomAt", type: "uint64" }] },
+    { name: "nextPlayAt", type: "uint64" }, { name: "nextGroomAt", type: "uint64" }, { name: "graceCharges", type: "uint8" }] },
 ];
 
 // badge bit → icon, in bit order: first touch, clutch, reviver, week streak,

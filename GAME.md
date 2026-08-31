@@ -48,6 +48,14 @@ don't extend it.
 
 Day 7 of a streak earns 📅 *Week Streak*; day 30 earns 🌙 *Moon Streak*.
 
+**Streak freeze.** Missing exactly one day spends a banked grace charge
+instead of resetting you to day 1 — the streak keeps climbing. Charges are
+earned automatically every 7th streak day (so day 7 gives you both the Week
+Streak badge and your first charge), capped at 2 held at once. Miss two days
+in a row, or miss one with no charge banked, and the streak really does
+reset. This exists because a bare streak counter is fragile — see the
+citation in Design Notes below.
+
 ## Feeding is part of the game
 
 Two ways to score feeding XP (both mint NOM 1:1 as always):
@@ -164,3 +172,14 @@ happiness once the game is deployed.
 - **Pull, not push.** The game never hooks the core contract; it reads
   `mood()` and `fedBy()`. The creature doesn't know the game exists, so the
   metabolism can never be broken by a game bug.
+- **The streak freeze is grounded in real product research, not vibes.**
+  Skinner's operant-conditioning work (*Schedules of Reinforcement*, 1957)
+  established that a strict, all-or-nothing schedule is also the one that
+  breaks fastest under a single miss; Duolingo's own streak-freeze mechanic
+  (verified from their blog — see [`research/technical-references.md`](research/technical-references.md))
+  is the field-tested version of "forgive one miss." True variable-ratio
+  rewards (the strongest schedule per that same research) were considered
+  and rejected — on-chain randomness cheap enough for a zero-admin contract
+  is gameable by simulate-then-broadcast-if-profitable, and a real fix needs
+  an oracle this project doesn't carry. See the technical-references doc for
+  the full citation list and what didn't survive verification.

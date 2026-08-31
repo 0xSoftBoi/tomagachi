@@ -46,11 +46,16 @@ autonomous agent that turns every token you feed it into training compute.
 - **It farms.** Idle USDC doesn't nap in the belly — the brain parks it across
   owner-whitelisted **ERC-4626 vaults** (money markets, tokenized T-bill funds,
   RWA vaults) via `invest`/`divest`/`harvest`, sampling each vault's share
-  price for trailing APY, allocating to the best and rebalancing when the
-  spread pays for the gas. Principal stays recallable compute budget;
-  harvested yield raises satiety and mints **no** NOM — it's food the creature
-  earned itself. A starved creature with a farm can literally wake itself from
-  hibernation on its own yield.
+  price for trailing APY and allocating to the best. It also **diversifies**:
+  a concentration cap (60% default, `maxVaultConcentrationBps`) stops any one
+  vault from soaking up the whole treasury once 2+ vaults are whitelisted —
+  DeFi curator-concentration research (cited in
+  [`research/technical-references.md`](research/technical-references.md))
+  found exactly that failure mode in real yield aggregators: a small set of
+  vaults holding a disproportionate, correlated share of TVL. Principal stays
+  recallable compute budget; harvested yield raises satiety and mints **no**
+  NOM — it's food the creature earned itself. A starved creature with a farm
+  can literally wake itself from hibernation on its own yield.
 - **It's an actual game.** [`TomagachiGame.sol`](contracts/TomagachiGame.sol)
   is the care layer: `pet` / `play` / `groom` on cooldowns raise a happiness
   stat that decays with neglect, daily care streaks multiply XP, feeding a
@@ -100,7 +105,7 @@ matters, with the market data behind it, is in
 | [`model/`](model/) | SUWA-LM character adapters, SUWA-WM world model |
 | [`web/`](web/) | live vitals page (static, reads Base directly) |
 | [`deploy/`](deploy/) | vLLM config, preflight tests, the listing checklist |
-| [`research/`](research/) | market scans, unit economics, the operating plan |
+| [`research/`](research/) | market scans, unit economics, the operating plan, cited technical references |
 
 ## Go live
 

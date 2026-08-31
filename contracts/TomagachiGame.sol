@@ -65,6 +65,15 @@ contract TomagachiGame {
     uint256 public constant STREAK_BONUS_PCT = 10;
     uint256 public constant STREAK_BONUS_CAP_DAYS = 14;
 
+    /// Streak-freeze grace: missing exactly one day survives on a stored
+    /// charge instead of resetting the streak. Charges are earned back every
+    /// 7-day streak milestone, capped at 2 held at once — a bare streak
+    /// counter (miss once, lose everything) is a fragile, anxiety-driving
+    /// design; a small forgiving buffer is what keeps long streaks alive
+    /// (Duolingo's own streak-freeze mechanic is the field-tested version of
+    /// this idea; see GAME.md's Design Notes for the citation).
+    uint8 public constant MAX_GRACE_CHARGES = 2;
+
     // ---------------------------------------------------------------- badges
 
     uint32 public constant BADGE_FIRST_TOUCH = 1 << 0; // first care action
@@ -92,6 +101,7 @@ contract TomagachiGame {
         uint128 xp;           // lifetime XP earned by this player
         uint128 fedViaGame;   // USDC fed through gameFeed (6dp)
         uint128 fedCredited;  // fedBy() already converted to XP (6dp)
+        uint8 graceCharges;   // banked streak-freezes, spent automatically
     }
 
     mapping(address => Player) internal players_;
@@ -110,6 +120,8 @@ contract TomagachiGame {
     event Groomed(address indexed player, uint256 xp, uint256 happiness);
     event GameFed(address indexed player, uint256 amount, uint256 xp, uint8 moodBefore);
     event StreakExtended(address indexed player, uint32 days_);
+    event GraceEarned(address indexed player, uint8 charges);
+    event GraceSpent(address indexed player, uint8 remaining);
     event BadgeEarned(address indexed player, uint32 badge);
     event LevelUp(uint32 level, uint256 totalXp);
 
@@ -179,17 +191,33 @@ contract TomagachiGame {
         emit Groomed(msg.sender, xp, h);
     }
 
-    /// Streak bookkeeping + streak-multiplied XP + care badges.
+    /// Streak bookkeeping (with one grace day banked against misses) +
+    /// streak-multiplied XP + care badges.
     function _careXp(Player storage p, uint256 base) internal returns (uint256 xp) {
         uint64 today = uint64(block.timestamp / 1 days);
-        if (p.lastCareDay == 0 || today > p.lastCareDay + 1) {
-            p.streakDays = 1; // first ever, or the streak broke
+        if (p.lastCareDay == 0) {
+            p.streakDays = 1; // first ever care action
         } else if (today == p.lastCareDay + 1) {
             p.streakDays += 1;
             emit StreakExtended(msg.sender, p.streakDays);
+        } else if (today == p.lastCareDay + 2 && p.graceCharges > 0) {
+            // missed exactly one day — spend a banked grace charge instead
+            // of resetting; a stricter streak isn't a more motivating one.
+            p.graceCharges -= 1;
+            p.streakDays += 1;
+            emit StreakExtended(msg.sender, p.streakDays);
+            emit GraceSpent(msg.sender, p.graceCharges);
+        } else if (today > p.lastCareDay) {
+            p.streakDays = 1; // gap too large, or no grace left — streak broke
         }
+        // today == p.lastCareDay: a same-day repeat action, streak unchanged.
         p.lastCareDay = today;
         p.careActions += 1;
+
+        if (p.streakDays > 0 && p.streakDays % 7 == 0 && p.graceCharges < MAX_GRACE_CHARGES) {
+            p.graceCharges += 1;
+            emit GraceEarned(msg.sender, p.graceCharges);
+        }
 
         uint256 bonusDays =
             p.streakDays > STREAK_BONUS_CAP_DAYS ? STREAK_BONUS_CAP_DAYS : p.streakDays;
@@ -292,7 +320,8 @@ contract TomagachiGame {
             uint128 fedViaGame,
             uint64 nextPetAt,
             uint64 nextPlayAt,
-            uint64 nextGroomAt
+            uint64 nextGroomAt,
+            uint8 graceCharges
         )
     {
         Player storage p = players_[who];
@@ -304,7 +333,8 @@ contract TomagachiGame {
             p.fedViaGame,
             p.lastPet + PET_COOLDOWN,
             p.lastPlay + PLAY_COOLDOWN,
-            p.lastGroom + GROOM_COOLDOWN
+            p.lastGroom + GROOM_COOLDOWN,
+            p.graceCharges
         );
     }
 

@@ -183,7 +183,7 @@ const BADGE_NAMES = ["First Touch", "Clutch", "Reviver", "Week Streak", "Moon St
  *  the tank is a real game the second the page opens. */
 function demoBackend() {
   const s = {
-    mood: "HAPPY", satiety: .62, happiness: .55, xp: 120, level: 0, streak: 1,
+    mood: "HAPPY", satiety: .62, happiness: .55, xp: 120, level: 0, streak: 1, grace: 0,
     badges: 1, careActions: 3, lastTick: now(),
     cd: { pet: 0, play: 0, groom: 0, feed: 0 },
     cdTotal: { pet: 8_000, play: 15_000, groom: 25_000, feed: 6_000 },
@@ -199,7 +199,10 @@ function demoBackend() {
   const gain = (xp, badgeBit) => {
     s.xp += Math.round(xp * (1 + Math.min(s.streak, 14) * .1));
     s.careActions++;
-    if (s.careActions % 12 === 0) { s.streak++; events.emit("streak", s.streak); }
+    if (s.careActions % 12 === 0) {
+      s.streak++; events.emit("streak", s.streak);
+      if (s.streak % 7 === 0 && s.grace < 2) s.grace++; // mirrors the on-chain grace-charge design
+    }
     if (badgeBit !== undefined && !(s.badges & (1 << badgeBit))) { s.badges |= 1 << badgeBit; events.emit("badge", badgeBit); }
     if (s.careActions >= 100) s.badges |= 1 << 7;
   };
@@ -211,7 +214,7 @@ function demoBackend() {
       return {
         mood: s.mood, satiety: s.satiety, happiness: s.happiness,
         level: s.level, xp: s.xp, xpNext: xpNeed(s.level + 1), xpPrev: xpNeed(s.level),
-        streak: s.streak, badges: s.badges,
+        streak: s.streak, badges: s.badges, grace: s.grace,
         cooldowns: Object.fromEntries(Object.keys(s.cd).map((k) => [k, { readyAt: s.cd[k], total: s.cdTotal[k] }])),
         secondsToHibernate: s.satiety * 240,
       };
@@ -250,7 +253,7 @@ async function chainBackend(cfg) {
       { type: "uint256" }, { type: "uint32" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" }] },
     { name: "playerState", type: "function", stateMutability: "view", inputs: [{ type: "address" }], outputs: [
       { type: "uint128" }, { type: "uint32" }, { type: "uint32" }, { type: "uint32" }, { type: "uint128" },
-      { type: "uint64" }, { type: "uint64" }, { type: "uint64" }] },
+      { type: "uint64" }, { type: "uint64" }, { type: "uint64" }, { type: "uint8" }] },
     { name: "pet", type: "function", stateMutability: "nonpayable", inputs: [], outputs: [] },
     { name: "play", type: "function", stateMutability: "nonpayable", inputs: [], outputs: [] },
     { name: "groom", type: "function", stateMutability: "nonpayable", inputs: [], outputs: [] },
@@ -272,7 +275,7 @@ async function chainBackend(cfg) {
 
   const cache = {
     mood: "EGG", satiety: 0, happiness: 0, level: 0, xp: 0, xpNext: 500, xpPrev: 0,
-    streak: 0, badges: 0, secondsToHibernate: 0, lastWords: "",
+    streak: 0, badges: 0, grace: 0, secondsToHibernate: 0, lastWords: "",
     cooldowns: { pet: { readyAt: 0, total: 14_400_000 }, play: { readyAt: 0, total: 28_800_000 }, groom: { readyAt: 0, total: 86_400_000 }, feed: { readyAt: 0, total: 0 } },
   };
   async function refresh() {
@@ -292,7 +295,7 @@ async function chainBackend(cfg) {
         cache.xpNext = 500 * (cache.level + 1) ** 2; cache.xpPrev = 500 * cache.level ** 2;
         if (account) {
           const p = await pub.readContract({ ...G, functionName: "playerState", args: [account] });
-          cache.streak = Number(p[1]); cache.badges = Number(p[3]);
+          cache.streak = Number(p[1]); cache.badges = Number(p[3]); cache.grace = Number(p[8] ?? 0);
           cache.cooldowns.pet.readyAt = Number(p[5]) * 1000 - Date.now() + now();
           cache.cooldowns.play.readyAt = Number(p[6]) * 1000 - Date.now() + now();
           cache.cooldowns.groom.readyAt = Number(p[7]) * 1000 - Date.now() + now();
@@ -638,7 +641,9 @@ function renderHUD(st, t) {
   const span = st.xpNext - st.xpPrev;
   $("xpfill").style.width = `${clamp(((st.xp - st.xpPrev) / span) * 100, 0, 100)}%`;
   $("xpline").textContent = `${st.xp.toLocaleString()} / ${st.xpNext.toLocaleString()} XP`;
-  $("streak").textContent = st.streak > 0 ? `🔥 ${st.streak}-day streak` : "";
+  $("streak").textContent = st.streak > 0
+    ? `🔥 ${st.streak}-day streak${st.grace ? `  ·  🧊×${st.grace} grace` : ""}`
+    : "";
   $("badges").innerHTML = BADGE_ICONS.map((ic, i) =>
     st.badges & (1 << i) ? `<span title="${BADGE_NAMES[i]}">${ic}</span>` : ""
   ).join("");

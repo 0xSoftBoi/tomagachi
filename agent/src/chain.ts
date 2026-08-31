@@ -172,6 +172,23 @@ export class Creature {
     return { liquid, invested, principal, yieldEarned };
   }
 
+  /** Diversification cap the brain must respect: mirrors invest()'s on-chain check. */
+  async concentrationCap(): Promise<{ bps: bigint; allowedCount: bigint }> {
+    const [bps, allowedCount] = (await Promise.all([
+      this.client.readContract({
+        address: this.deployment.tomagachi,
+        abi: tomagachiAbi,
+        functionName: "maxVaultConcentrationBps",
+      }),
+      this.client.readContract({
+        address: this.deployment.tomagachi,
+        abi: tomagachiAbi,
+        functionName: "allowedVaultCount",
+      }),
+    ])) as [bigint, bigint];
+    return { bps, allowedCount };
+  }
+
   async vaultAllowed(vault: `0x${string}`): Promise<boolean> {
     return this.client.readContract({
       address: this.deployment.tomagachi,

@@ -133,6 +133,35 @@ test("daily streaks: consecutive days climb, a missed day resets", async () => {
   assert.equal(BigInt(badges) & BigInt(BADGE_WEEK_STREAK), BigInt(BADGE_WEEK_STREAK));
 });
 
+test("streak freeze: a banked grace charge survives one missed day, but not two", async () => {
+  await gameFeedAs(ALICE, USDC(400));
+
+  // Build a 7-day streak — day 7 both earns the Week Streak badge and banks
+  // a grace charge (streakDays % 7 == 0).
+  await chain.write(ALICE, game, "groom");
+  for (let i = 0; i < 6; i++) {
+    chain.advance(DAY);
+    await chain.write(ALICE, game, "groom");
+  }
+  let [, streak, , , , , , , grace] = await player(ALICE);
+  assert.equal(streak, 7);
+  assert.equal(grace, 1);
+
+  // Miss exactly one day (a 2-day gap): the grace charge is spent instead of
+  // resetting the streak, and it keeps climbing rather than restarting at 1.
+  chain.advance(2 * DAY);
+  await chain.write(ALICE, game, "groom");
+  [, streak, , , , , , , grace] = await player(ALICE);
+  assert.equal(streak, 8);
+  assert.equal(grace, 0);
+
+  // No grace left: the next 2-day gap really does reset the streak.
+  chain.advance(2 * DAY);
+  await chain.write(ALICE, game, "groom");
+  [, streak] = await player(ALICE);
+  assert.equal(streak, 1);
+});
+
 test("feeding through the game: mood multipliers, badges, and NOM still mints 1:1", async () => {
   await gameFeedAs(ALICE, USDC(50)); // EGG => 1x: 500 XP
   let [xp] = await player(ALICE);

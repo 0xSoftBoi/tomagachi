@@ -137,6 +137,39 @@ test("treasury: invest moves energy into the vault, divest recalls it", async ()
   );
 });
 
+test("vault concentration cap: bootstraps freely, then keeps a vault from dominating", async () => {
+  await feedAs(ALICE, USDC(1_000)); // Alice's whole minted balance
+  await chain.write(OWNER, creature, "allowVault", [vault.address, true]);
+
+  // Only one vault allowed: the owner's single-vault choice stands, even at
+  // 100% concentration — there is no alternative to diversify into.
+  await chain.write(OPERATOR, creature, "invest", [vault.address, USDC(300)]);
+  assert.equal(await chain.read(creature, "principalOf", [vault.address]), USDC(300));
+
+  // A second vault makes diversification possible. totalInvested is already
+  // non-zero (300), so the 60% default cap now applies going forward.
+  const vault2 = await chain.deploy("MockVault4626", [usdc.address]);
+  await chain.write(OWNER, creature, "allowVault", [vault2.address, true]);
+  assert.equal(await chain.read(creature, "allowedVaultCount"), 2n);
+
+  // 450 into vault2 lands it at exactly 60% of the new 750 total — the cap
+  // boundary is inclusive (<=), so this succeeds. 250 USDC stays liquid.
+  await chain.write(OPERATOR, creature, "invest", [vault2.address, USDC(450)]);
+  assert.equal(await chain.read(creature, "principalOf", [vault2.address]), USDC(450));
+
+  // One more USDC into the already-60% vault2 would push it over the line.
+  await expectRevert(
+    chain.write(OPERATOR, creature, "invest", [vault2.address, USDC(1)]),
+    "invest: concentration cap"
+  );
+  // The same USDC is fine going to the less-concentrated vault (now 40%).
+  await chain.write(OPERATOR, creature, "invest", [vault.address, USDC(1)]);
+
+  await expectRevert(chain.write(ALICE, creature, "setMaxVaultConcentration", [10000n]), "not owner");
+  await chain.write(OWNER, creature, "setMaxVaultConcentration", [10000n]); // owner can loosen it
+  await chain.write(OPERATOR, creature, "invest", [vault2.address, USDC(1)]); // now fine at any share
+});
+
 test("harvest eats real yield: satiety rises, no NOM mints, and it can wake the creature", async () => {
   await feedAs(ALICE, USDC(20)); // 4 days of life
   await chain.write(OWNER, creature, "allowVault", [vault.address, true]);

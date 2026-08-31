@@ -164,8 +164,18 @@ contract Tomagachi {
     mapping(address => bool) internal listedVault;  // ever pushed to vaultList
     mapping(address => uint256) public principalOf; // USDC principal per vault
     address[] public vaultList;                     // every vault ever whitelisted
+    uint256 public allowedVaultCount;                // currently-allowed vaults
     uint256 public totalInvested;                   // sum of live principals
     uint256 public totalYieldEarned;                // lifetime harvested yield
+
+    /// Cap on how much of total invested principal may sit in one vault, in
+    /// bps (6000 = 60%). Only enforced once 2+ vaults are allowed — a single
+    /// whitelisted vault is the owner's deliberate choice, not concentration
+    /// risk. A small set of curators/vaults holding a disproportionate share
+    /// of TVL, with correlated tail risk, is exactly the failure mode DeFi
+    /// vault-curation research warns about — see
+    /// research/technical-references.md.
+    uint256 public maxVaultConcentrationBps = 6000;
 
     struct Checkpoint {
         uint64 time;
@@ -376,8 +386,19 @@ contract Tomagachi {
                 vaultList.push(vault);
             }
         }
-        allowedVault[vault] = allowed;
+        if (allowed != allowedVault[vault]) {
+            allowedVault[vault] = allowed;
+            if (allowed) allowedVaultCount += 1;
+            else allowedVaultCount -= 1;
+        }
         emit VaultAllowed(vault, allowed);
+    }
+
+    /// @notice Tune the diversification cap. 10000 (100%) effectively
+    /// disables it; the owner may also tighten it below the 60% default.
+    function setMaxVaultConcentration(uint256 bps) external onlyOwner {
+        require(bps <= 10000, "conc: bad bps");
+        maxVaultConcentrationBps = bps;
     }
 
     /// @notice Park idle USDC in a whitelisted vault. Not spending — principal
@@ -387,8 +408,21 @@ contract Tomagachi {
         require(allowedVault[vault], "invest: vault not allowed");
         require(amount > 0 && amount <= stable.balanceOf(address(this)), "invest: bad amount");
 
-        principalOf[vault] += amount;
-        totalInvested += amount;
+        uint256 newPrincipal = principalOf[vault] + amount;
+        uint256 newTotal = totalInvested + amount;
+        // Enforced only once there is existing principal to be concentrated
+        // AND an alternative to diversify into — the very first deposit ever
+        // (or the first after everything was divested) is unconstrained,
+        // since checking a fresh deposit against a total made entirely of
+        // itself would make bootstrapping any multi-vault treasury impossible.
+        if (allowedVaultCount > 1 && totalInvested > 0) {
+            require(
+                newPrincipal * 10000 <= newTotal * maxVaultConcentrationBps,
+                "invest: concentration cap"
+            );
+        }
+        principalOf[vault] = newPrincipal;
+        totalInvested = newTotal;
 
         require(stable.approve(vault, amount), "invest: approve");
         IERC4626(vault).deposit(amount, address(this));

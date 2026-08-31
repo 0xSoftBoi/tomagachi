@@ -26,6 +26,26 @@ import * as suwappu from "./suwappu.js";
 import { peekUnfed, markFed } from "./x402.js";
 import { announce } from "./telegram.js";
 
+/**
+ * Max additional principal `vault` may receive right now without breaching
+ * the on-chain concentration cap (mirrors Tomagachi.sol's `invest()` check:
+ * (principal+x)*10000 <= (totalInvested+x)*capBps, solved for x). Returns
+ * null when the cap does not apply — a single allowed vault, a disabled
+ * cap, or a treasury that hasn't bootstrapped any principal yet, all of
+ * which the contract itself also treats as unconstrained.
+ */
+function headroomFor(
+  principal: bigint,
+  totalInvestedNow: bigint,
+  capBps: bigint,
+  allowedCount: bigint
+): bigint | null {
+  if (allowedCount <= 1n || totalInvestedNow === 0n || capBps >= 10000n) return null;
+  const denom = 10000n - capBps;
+  const numer = capBps * totalInvestedNow - principal * 10000n;
+  return numer <= 0n ? 0n : numer / denom;
+}
+
 /** What the creature posts in the community chat when its mood turns. */
 const MOOD_NEWS: Record<string, string> = {
   HAPPY: "😊 HAPPY again — belly full, gradients flowing.",
@@ -184,7 +204,7 @@ export class Brain {
         allowed
           .map((v) => `${v.slice(0, 8)}=${apy[v] !== undefined ? (apy[v] * 100).toFixed(2) + "%" : "?"}`)
           .join(" ") +
-        ` → allocating to ${best.slice(0, 8)}`
+        ` → best is ${best.slice(0, 8)} (filled first, headroom permitting)`
     );
 
     // The liquidity buffer can never sit below the training threshold.
@@ -195,9 +215,36 @@ export class Brain {
 
     const t = await this.creature.treasury();
     if (t.liquid > target) {
-      const excess = t.liquid - target;
-      const h = await this.creature.invest(best, excess);
-      console.log(`[treasury] farmed ${formatUnits(excess, 6)} idle USDC into ${best}: ${h}`);
+      // Fill vaults in APY order, each capped by its concentration headroom —
+      // a small set of vaults soaking up a disproportionate share of the
+      // treasury, with correlated tail risk, is exactly the failure mode
+      // DeFi curator-concentration research warns about (see
+      // research/technical-references.md). Diversifying isn't a downgrade
+      // of the strategy; the cited work on yield aggregators found that
+      // strategic complexity chasing marginal APY does not reliably beat
+      // simple allocation, while concentration risk is real and measured.
+      let excess = t.liquid - target;
+      const { bps: capBps, allowedCount } = await this.creature.concentrationCap();
+      const order = [...allowed].sort((a, b) => (apy[b] ?? -1) - (apy[a] ?? -1));
+      let runningTotal = t.principal;
+      for (const v of order) {
+        if (excess <= 0n) break;
+        const room = headroomFor(positions[v].principal, runningTotal, capBps, allowedCount);
+        const amount = room === null || room > excess ? excess : room;
+        if (amount <= 0n) continue;
+        const h = await this.creature.invest(v, amount);
+        console.log(`[treasury] farmed ${formatUnits(amount, 6)} idle USDC into ${v}: ${h}`);
+        positions[v].principal += amount;
+        runningTotal += amount;
+        excess -= amount;
+      }
+      if (excess > 0n) {
+        console.log(
+          `[treasury] ${formatUnits(excess, 6)} USDC stays liquid — no vault has headroom under the ${
+            Number(capBps) / 100
+          }% concentration cap`
+        );
+      }
     } else if (t.liquid < config.minEnergyToTrain && t.principal > 0n) {
       // Recall from the worst-performing funded vault first.
       const funded = allowed.filter((v) => positions[v].principal > 0n);
@@ -216,10 +263,25 @@ export class Brain {
       if (p === 0n || apy[v] === undefined || apy[best] === undefined) continue;
       if ((apy[best] - apy[v]) * 10_000 >= config.rebalanceMinBps) {
         await this.creature.divest(v, p);
-        const h = await this.creature.invest(best, p);
-        console.log(
-          `[treasury] rebalanced ${formatUnits(p, 6)} USDC ${v.slice(0, 8)} → ${best.slice(0, 8)}: ${h}`
-        );
+        // Divesting just shrank totalInvested — re-read before deciding how
+        // much of the freed principal `best` can absorb under the cap.
+        const [t2, cap2] = await Promise.all([
+          this.creature.treasury(),
+          this.creature.concentrationCap(),
+        ]);
+        const room = headroomFor(positions[best].principal, t2.principal, cap2.bps, cap2.allowedCount);
+        const investAmount = room === null || room > p ? p : room;
+        if (investAmount > 0n) {
+          const h = await this.creature.invest(best, investAmount);
+          console.log(
+            `[treasury] rebalanced ${formatUnits(investAmount, 6)} USDC ${v.slice(0, 8)} → ${best.slice(0, 8)}: ${h}`
+          );
+        }
+        if (investAmount < p) {
+          console.log(
+            `[treasury] ${formatUnits(p - investAmount, 6)} USDC from the rebalance stays liquid (concentration cap)`
+          );
+        }
         break;
       }
     }
