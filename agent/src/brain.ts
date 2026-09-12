@@ -17,7 +17,7 @@
 import { formatUnits, erc20Abi } from "viem";
 import { join } from "node:path";
 import { config } from "./config.js";
-import { loadState, saveState } from "./state.js";
+import { loadState, saveState, type AgentState } from "./state.js";
 import { Creature } from "./chain.js";
 import { makeProvider } from "./compute.js";
 import { catalog as characterCatalog } from "./characters.js";
@@ -45,6 +45,59 @@ const LINES: Record<string, string[]> = {
 function say(mood: string): string {
   const lines = LINES[mood] ?? LINES.HAPPY;
   return lines[Math.floor(Math.random() * lines.length)];
+}
+
+/**
+ * Decide whether this epoch's compute was already paid for by an interrupted
+ * previous run. `state.activeJob` is written right after buyCompute() lands
+ * and cleared only after checkpoint() lands — so if the process crashed, or
+ * checkpoint() threw (network blip, RPC hiccup), in between, a leftover
+ * activeJob whose id matches the job we are about to start means the on-chain
+ * purchase already happened and must not be repeated. Pure and side-effect
+ * free so it can be unit tested without a chain or a provider.
+ */
+export function planEpoch(
+  state: Pick<AgentState, "activeJob">,
+  jobRef: string,
+  cost: bigint
+): { resuming: boolean; paidUsdc: bigint } {
+  if (state.activeJob && state.activeJob.id === jobRef) {
+    return { resuming: true, paidUsdc: BigInt(state.activeJob.paidUsdc) };
+  }
+  return { resuming: false, paidUsdc: cost };
+}
+
+/**
+ * Decide whether an interrupted earn() attempt already landed on-chain, by
+ * comparing the contract's lifetime `totalRevenueEarned` counter now against
+ * its value right before the attempt. Pure and side-effect free so it can be
+ * unit tested without a chain.
+ */
+export function reconcileEarn(
+  pending: NonNullable<AgentState["pendingEarn"]>,
+  nowEarned: bigint
+): { alreadyLanded: boolean; amount: bigint } {
+  const amount = BigInt(pending.amount);
+  const before = BigInt(pending.revenueBefore);
+  return { alreadyLanded: nowEarned - before >= amount, amount };
+}
+
+/**
+ * Pick the worst-APY currently-allowed vault to recall liquidity from.
+ * `treasury().principal` is the contract's lifetime aggregate across every
+ * vault ever invested in, which can include one the owner has since
+ * de-whitelisted — such a vault holds real principal but is invisible to
+ * this tick's `allowed` list, so `undefined` (not a reduce-on-empty-array
+ * crash) is the correct answer when nothing currently allowed is funded.
+ */
+export function pickRecallVault<T extends string>(
+  allowed: T[],
+  positions: Record<string, { principal: bigint }>,
+  apy: Record<string, number>
+): T | undefined {
+  const funded = allowed.filter((v) => positions[v].principal > 0n);
+  if (funded.length === 0) return undefined;
+  return funded.reduce((a, b) => ((apy[b] ?? -1) < (apy[a] ?? -1) ? b : a));
 }
 
 export class Brain {
@@ -200,13 +253,19 @@ export class Brain {
       console.log(`[treasury] farmed ${formatUnits(excess, 6)} idle USDC into ${best}: ${h}`);
     } else if (t.liquid < config.minEnergyToTrain && t.principal > 0n) {
       // Recall from the worst-performing funded vault first.
-      const funded = allowed.filter((v) => positions[v].principal > 0n);
-      const worst = funded.reduce((a, b) => ((apy[b] ?? -1) < (apy[a] ?? -1) ? b : a));
-      const shortfall = target - t.liquid;
-      const p = positions[worst].principal;
-      const recall = shortfall < p ? shortfall : p;
-      const h = await this.creature.divest(worst, recall);
-      console.log(`[treasury] recalled ${formatUnits(recall, 6)} USDC from ${worst}: ${h}`);
+      const worst = pickRecallVault(allowed, positions, apy);
+      if (!worst) {
+        console.warn(
+          `[treasury] liquidity is short but no currently-allowed vault holds principal ` +
+            `(a de-whitelisted vault may still hold ${formatUnits(t.principal, 6)} USDC) — skipping recall`
+        );
+      } else {
+        const shortfall = target - t.liquid;
+        const p = positions[worst].principal;
+        const recall = shortfall < p ? shortfall : p;
+        const h = await this.creature.divest(worst, recall);
+        console.log(`[treasury] recalled ${formatUnits(recall, 6)} USDC from ${worst}: ${h}`);
+      }
     }
 
     // One rebalance per tick, and only when the spread pays for the gas.
@@ -287,14 +346,45 @@ export class Brain {
 
   /** Pass settled x402 revenue to the contract: pay-per-call becomes food. */
   async settleRevenue(): Promise<void> {
+    // earn() has no jobRef/nonce for on-chain dedup, so if a previous attempt
+    // crashed (or hit a transient RPC error) between the tx landing and our
+    // ledger being updated, a naive retry would transfer the operator's own
+    // USDC into the contract a second time for revenue counted once. Check
+    // the chain's own lifetime counter before deciding whether to retry.
+    let state = loadState();
+    if (state.pendingEarn) {
+      const nowEarned = await this.creature.totalRevenueEarned();
+      const r = reconcileEarn(state.pendingEarn, nowEarned)!;
+      state.pendingEarn = undefined;
+      saveState(state);
+      if (r.alreadyLanded) {
+        markFed(r.amount);
+        console.warn(
+          `[earn] a previous ${formatUnits(r.amount, 6)} USDC attempt had already landed ` +
+            `on-chain — reconciled without resubmitting this tick`
+        );
+        return;
+      }
+      console.warn(`[earn] previous ${formatUnits(r.amount, 6)} USDC attempt did not land — retrying`);
+      state = loadState();
+    }
+
     const unfed = peekUnfed();
     if (unfed < config.earnMinUsdc) return;
     const walletUsdc = await this.creature.walletBalance(this.creature.deployment.usdc);
     const amount = unfed < walletUsdc ? unfed : walletUsdc;
     if (amount === 0n) return;
 
+    const revenueBefore = await this.creature.totalRevenueEarned();
+    state.pendingEarn = { amount: amount.toString(), revenueBefore: revenueBefore.toString() };
+    saveState(state);
+
     const h = await this.creature.earn(amount, "x402");
     markFed(amount);
+    state = loadState();
+    state.pendingEarn = undefined;
+    saveState(state);
+
     console.log(`[earn] ate ${formatUnits(amount, 6)} USDC of x402 revenue: ${h}`);
     void announce(`💰 ate ${formatUnits(amount, 6)} USDC of pay-per-call revenue. honest work.`);
     await this.creature
@@ -319,22 +409,36 @@ export class Brain {
     const jobRef = character ? `${character}-epoch-${epoch}` : `suwa-wm-epoch-${epoch}`;
     const outDir = join(config.runsDir, jobRef);
 
-    // 1. Pay for compute ON-CHAIN first — the purchase is the public record.
-    if (cost > 0n) {
+    // Resume rather than re-pay: if a previous run already bought compute for
+    // this exact job and then crashed (or lost the network) before checkpoint
+    // landed, state.epoch never advanced, so a naive retry would call
+    // buyCompute() a second time for the same epoch — a real double-spend of
+    // the creature's compute budget. buyCompute has no jobRef dedup on-chain
+    // (see contracts/Tomagachi.sol), so the guard has to live here.
+    const plan = planEpoch(state, jobRef, cost);
+    if (plan.resuming) {
+      console.warn(
+        `[compute] resuming ${jobRef}: compute already bought ` +
+          `(${formatUnits(plan.paidUsdc, 6)} USDC) — not re-buying`
+      );
+    } else if (cost > 0n) {
       if (!this.provider.payTo) throw new Error("remote provider needs COMPUTE_PAY_TO");
       const h = await this.creature.buyCompute(this.provider.payTo, cost, this.provider.name, jobRef);
       console.log(`[compute] bought ${formatUnits(cost, 6)} USDC of ${this.provider.name}: ${h}`);
     } else {
       console.log(`[compute] bootstrap mode: training locally at no charge`);
     }
+    const paidUsdc = plan.paidUsdc;
 
-    state.activeJob = {
-      id: jobRef,
-      provider: this.provider.name,
-      startedAt: new Date().toISOString(),
-      paidUsdc: cost.toString(),
-    };
-    saveState(state);
+    if (!plan.resuming) {
+      state.activeJob = {
+        id: jobRef,
+        provider: this.provider.name,
+        startedAt: new Date().toISOString(),
+        paidUsdc: paidUsdc.toString(),
+      };
+      saveState(state);
+    }
 
     // 2. Train.
     const steps = character ? config.stepsPerAdapterEpoch : config.stepsPerEpoch;
@@ -353,7 +457,7 @@ export class Brain {
       `0x${result.manifest.sha256}` as `0x${string}`,
       uri,
       lossMilli,
-      cost
+      paidUsdc
     );
     const scoreNote =
       result.manifest.score !== undefined ? ` score=${result.manifest.score.toFixed(3)}` : "";
@@ -373,7 +477,7 @@ export class Brain {
     await this.creature.speak(words).catch(() => {});
     void announce(
       `🧠 epoch ${epoch}${character ? ` (${character})` : ""} trained — ` +
-        `sha256 ${result.manifest.sha256.slice(0, 12)}… on-chain, $${formatUnits(cost, 6)} of compute.`
+        `sha256 ${result.manifest.sha256.slice(0, 12)}… on-chain, $${formatUnits(paidUsdc, 6)} of compute.`
     );
   }
 }

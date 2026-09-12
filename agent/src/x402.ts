@@ -180,7 +180,21 @@ export async function settlePayment(header: string): Promise<SettleResult> {
   const signature = p.payload?.signature;
   if (!a || !signature) return { ok: false, reason: "missing authorization or signature" };
 
-  const value = BigInt(a.value);
+  // Every field below comes straight from an untrusted client. A malformed
+  // value (non-numeric `value`/`validAfter`/`validBefore`, a non-string
+  // `to`) must fail as a clean 402, not as an unhandled rejection that
+  // surfaces to the caller as a generic 500.
+  let value: bigint, validAfter: bigint, validBefore: bigint;
+  try {
+    value = BigInt(a.value);
+    validAfter = BigInt(a.validAfter);
+    validBefore = BigInt(a.validBefore);
+    if (typeof a.to !== "string" || typeof a.from !== "string" || typeof a.nonce !== "string") {
+      throw new Error("non-string address/nonce field");
+    }
+  } catch {
+    return { ok: false, reason: "malformed authorization fields" };
+  }
   const now = BigInt(Math.floor(Date.now() / 1000));
   if (a.to.toLowerCase() !== c.account.address.toLowerCase()) {
     return { ok: false, reason: "authorization pays the wrong address" };
@@ -188,9 +202,14 @@ export async function settlePayment(header: string): Promise<SettleResult> {
   if (value < config.x402PriceUsdc) {
     return { ok: false, reason: `authorized ${value}, price is ${config.x402PriceUsdc}` };
   }
-  if (now <= BigInt(a.validAfter)) return { ok: false, reason: "authorization not yet valid" };
-  if (now >= BigInt(a.validBefore)) return { ok: false, reason: "authorization expired" };
-  if (inFlight.has(a.nonce)) return { ok: false, reason: "nonce already being settled" };
+  if (now <= validAfter) return { ok: false, reason: "authorization not yet valid" };
+  if (now >= validBefore) return { ok: false, reason: "authorization expired" };
+  // EIP-3009 nonces are scoped per signer, not globally unique, so the
+  // in-flight key must include `from` — otherwise two different payers who
+  // happen to pick the same nonce would falsely collide and one's legitimate
+  // payment would be rejected.
+  const inFlightKey = `${a.from.toLowerCase()}:${a.nonce}`;
+  if (inFlight.has(inFlightKey)) return { ok: false, reason: "nonce already being settled" };
 
   const valid = await verifyTypedData({
     address: a.from,
@@ -206,15 +225,15 @@ export async function settlePayment(header: string): Promise<SettleResult> {
       from: a.from,
       to: a.to,
       value,
-      validAfter: BigInt(a.validAfter),
-      validBefore: BigInt(a.validBefore),
+      validAfter,
+      validBefore,
       nonce: a.nonce,
     },
     signature,
   }).catch(() => false);
   if (!valid) return { ok: false, reason: "bad EIP-3009 signature" };
 
-  inFlight.add(a.nonce);
+  inFlight.add(inFlightKey);
   try {
     // USDC itself enforces nonce single-use, so replay dies on-chain.
     const txHash = await c.wallet.writeContract({
@@ -223,7 +242,7 @@ export async function settlePayment(header: string): Promise<SettleResult> {
       address: c.deployment.usdc,
       abi: usdcAbi,
       functionName: "transferWithAuthorization",
-      args: [a.from, a.to, value, BigInt(a.validAfter), BigInt(a.validBefore), a.nonce, signature],
+      args: [a.from, a.to, value, validAfter, validBefore, a.nonce, signature],
     });
     const receipt = await c.client.waitForTransactionReceipt({ hash: txHash });
     if (receipt.status !== "success") return { ok: false, reason: "settlement tx reverted" };
@@ -239,7 +258,7 @@ export async function settlePayment(header: string): Promise<SettleResult> {
   } catch (e: any) {
     return { ok: false, reason: `settlement failed: ${e.shortMessage ?? e.message}` };
   } finally {
-    inFlight.delete(a.nonce);
+    inFlight.delete(inFlightKey);
   }
 }
 

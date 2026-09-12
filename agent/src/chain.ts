@@ -155,6 +155,16 @@ export class Creature {
     return this.write("speak", [words]);
   }
 
+  /** Lifetime x402/invoiced revenue eaten via earn() — used to reconcile a
+   *  brain-side earn() attempt whose outcome wasn't observed locally. */
+  async totalRevenueEarned(): Promise<bigint> {
+    return this.client.readContract({
+      address: this.deployment.tomagachi,
+      abi: tomagachiAbi,
+      functionName: "totalRevenueEarned",
+    }) as Promise<bigint>;
+  }
+
   // --- real-yield treasury ------------------------------------------------
 
   /** The whole balance sheet: liquid, invested, principal, lifetime yield. */
