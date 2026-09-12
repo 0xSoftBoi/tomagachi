@@ -1,14 +1,20 @@
 /**
- * Brain-side unit test for Brain.manageTreasury() — the off-chain rebalancing
- * logic in agent/src/brain.ts — run against the same in-process EVM as the
- * contract suite, via a fake Creature adapter that forwards every call the
- * method makes (vaultAllowed/vaultSharePrice/vaultPosition/harvest/treasury/
- * invest/divest/speak) onto the real Tomagachi + mock-vault contracts.
+ * Brain-side tests for agent/src/brain.ts. Two kinds live here:
  *
- * This is deliberately the one test in the suite that exercises production
- * TypeScript logic (not just the Solidity contract): the contract has no
- * concept of "best APY" or "rebalance" — that decision lives entirely in
- * manageTreasury(), so it can only be checked by running it.
+ * 1. An integration test for Brain.manageTreasury() — the off-chain
+ *    rebalancing logic — run against the same in-process EVM as the
+ *    contract suite, via a fake Creature adapter that forwards every call
+ *    the method makes onto the real Tomagachi + mock-vault contracts. This
+ *    is the one test in the suite that exercises production TypeScript
+ *    logic (not just the Solidity contract): the contract has no concept
+ *    of "best APY" or "rebalance" — that decision lives entirely in
+ *    manageTreasury(), so it can only be checked by running it.
+ *
+ * 2. Regression tests for the brain's crash/retry safety around on-chain
+ *    state-mutating calls (planEpoch, reconcileEarn, pickRecallVault) —
+ *    pure decision functions extracted from brain.ts, no chain, no
+ *    provider, so a network failure mid-epoch or mid-earn() can be
+ *    simulated deterministically.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -16,14 +22,13 @@ import { rmSync } from "node:fs";
 import { TestChain, artifact, type Deployed } from "./evm.js";
 import { config } from "../src/config.js";
 import { saveState } from "../src/state.js";
-import { Brain } from "../src/brain.js";
+import { Brain, planEpoch, reconcileEarn, pickRecallVault } from "../src/brain.js";
 
 const OWNER = "0x1000000000000000000000000000000000000001";
 const OPERATOR = "0x2000000000000000000000000000000000000002";
 const ALICE = "0x3000000000000000000000000000000000000003";
 
 const USDC = (n: number) => BigInt(Math.round(n * 1e6));
-const NOM = (n: number) => BigInt(n) * 10n ** 18n;
 
 /** Adapts the real chain.Creature interface that Brain.manageTreasury() calls
  *  onto our in-process EVM, so the production rebalancing logic runs against
@@ -159,4 +164,78 @@ test("manageTreasury(): harvests every vault above minimum (minting no NOM), far
     Object.assign(config, savedConfig);
     rmSync(config.stateDir, { recursive: true, force: true });
   }
+});
+
+test("planEpoch: a fresh job pays for compute", () => {
+  const plan = planEpoch({}, "pirate-epoch-1", 5_000_000n);
+  assert.equal(plan.resuming, false);
+  assert.equal(plan.paidUsdc, 5_000_000n);
+});
+
+test("planEpoch: resumes instead of re-buying compute for an interrupted job", () => {
+  // Simulates state left behind when buyCompute() landed on-chain but the
+  // process crashed (or checkpoint() threw) before the epoch completed.
+  const state = {
+    activeJob: {
+      id: "pirate-epoch-1",
+      provider: "gpu-worker",
+      startedAt: new Date().toISOString(),
+      paidUsdc: "5000000",
+    },
+  };
+  const plan = planEpoch(state, "pirate-epoch-1", 5_000_000n);
+  assert.equal(plan.resuming, true);
+  assert.equal(plan.paidUsdc, 5_000_000n, "must reuse the amount already paid, not re-quote");
+});
+
+test("planEpoch: does not resume a stale job left over from a different epoch", () => {
+  const state = {
+    activeJob: {
+      id: "pirate-epoch-1",
+      provider: "gpu-worker",
+      startedAt: new Date().toISOString(),
+      paidUsdc: "5000000",
+    },
+  };
+  const plan = planEpoch(state, "pirate-epoch-2", 5_000_000n);
+  assert.equal(plan.resuming, false);
+  assert.equal(plan.paidUsdc, 5_000_000n);
+});
+
+test("reconcileEarn: reports a landed earn() when the chain's counter already moved", () => {
+  const pending = { amount: "1000000", revenueBefore: "9000000" };
+  // totalRevenueEarned already advanced by >= the attempted amount: the tx
+  // that we lost track of locally did in fact land.
+  const r = reconcileEarn(pending, 10_000_000n);
+  assert.equal(r.alreadyLanded, true);
+  assert.equal(r.amount, 1_000_000n);
+});
+
+test("reconcileEarn: reports a lost earn() as safe to retry when the counter never moved", () => {
+  const pending = { amount: "1000000", revenueBefore: "9000000" };
+  // Nothing changed on-chain: the earn() tx never landed (e.g. it never
+  // broadcast), so retrying is safe and will not double-count revenue.
+  const r = reconcileEarn(pending, 9_000_000n);
+  assert.equal(r.alreadyLanded, false);
+  assert.equal(r.amount, 1_000_000n);
+});
+
+test("pickRecallVault: picks the currently-allowed vault with the lowest APY", () => {
+  const positions = {
+    a: { principal: 10n },
+    b: { principal: 20n },
+  };
+  const apy = { a: 0.05, b: 0.02 };
+  assert.equal(pickRecallVault(["a", "b"], positions, apy), "b");
+});
+
+test("pickRecallVault: returns undefined instead of crashing when treasury().principal " +
+  "reflects a vault that has since been de-whitelisted", () => {
+  // Regression: treasury().principal > 0 does not imply some vault in the
+  // *currently allowed* list has principal — a de-whitelisted vault can
+  // still hold funds. The old code did `funded.reduce(...)` on a possibly
+  // empty array here, which throws on an empty array with no initial value.
+  const positions = { a: { principal: 0n } };
+  const apy = { a: 0.05 };
+  assert.equal(pickRecallVault(["a"], positions, apy), undefined);
 });
