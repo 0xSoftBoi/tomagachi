@@ -175,8 +175,16 @@ def main() -> None:
         "license_effective_after_days": cat.license_delay_days,
         "reproduce": (
             f"python3 suwa_lm/train_lora.py --character {character.id} "
-            f"--epoch {args.epoch} --steps {args.steps} --seed {seed}"
+            f"--epoch {args.epoch} --steps {args.steps} --seed {seed} "
+            f"--examples {args.examples} --rank {args.rank} --alpha {args.alpha} --lr {args.lr}"
             + (" --tiny" if args.tiny else "")
+            # `resume` may come from an explicit --resume or from auto-detecting
+            # the previous epoch's adapter next to a *default* --out. Recording
+            # the exact path here (instead of leaving it to be re-guessed) is
+            # what keeps the command reproducible when --out or --resume were
+            # non-default -- otherwise a re-run silently trains from scratch
+            # and never reproduces the released hash.
+            + (f" --resume {resume}" if resume else "")
         ),
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
