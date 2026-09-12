@@ -337,27 +337,50 @@ test("vote() rejects an address holding no NOM", async () => {
   await expectRevert(chain.write(BOB, creature, "vote", [0n, true]), "vote: no NOM");
 });
 
-test("governance weight is read live, not snapshotted: transferring NOM after voting lets the same tokens vote again", async () => {
-  // Alice feeds once (100 NOM), votes yes, then hands the same NOM to Bob who
-  // votes yes too — 200 NOM of "yes" backed by only 100 NOM of contribution.
-  // This documents that vote() has no per-proposal balance snapshot; a
-  // real fix would need checkpointed voting weight (e.g. ERC20Votes-style).
+test("governance weight is snapshotted at proposal creation: transferring NOM after voting cannot double-count it across blocks", async () => {
+  // Alice feeds once (100 NOM), votes yes, then — in a *later* block — hands
+  // the same NOM to Bob. Bob's NOM balance at the proposal's snapshot time
+  // (before any of this happened) is zero, so his vote must be rejected for
+  // having no weight — proving the checkpoint-based snapshot closes the
+  // double-count that was previously possible when vote() read a live,
+  // transferable balance.
   await feedAs(ALICE, USDC(100));
   await chain.write(ALICE, creature, "propose", ["scale the reef"]);
+  chain.advance(1);
 
+  await chain.write(ALICE, creature, "vote", [0n, true]);
+  chain.advance(1);
+  await chain.write(ALICE, nom, "transfer", [BOB, NOM(100)]);
+  chain.advance(1);
+  await expectRevert(chain.write(BOB, creature, "vote", [0n, true]), "vote: no NOM");
+
+  const p = await chain.read<any[]>(creature, "proposals", [0n]);
+  assert.equal(p[3], NOM(100)); // only Alice's original contribution counted
+});
+
+test("governance snapshot has a disclosed residual: a transfer landing in the exact same block timestamp as the proposal is inclusive", async () => {
+  // This is not a fix regression — it's the auditor's disclosed limitation,
+  // pinned as a test so it can't silently get worse. A real close requires
+  // block-number-indexed checkpoints with an enforced voting delay
+  // (Compound/OZ ERC20Votes-style), which this in-process harness pins
+  // block.number to 1 for every call and so cannot exercise.
+  await feedAs(ALICE, USDC(100));
+  await chain.write(ALICE, creature, "propose", ["scale the reef"]);
+  // No chain.advance() here: propose, vote, and transfer all land at the
+  // same block.timestamp, so the checkpoint tie-break is inclusive.
   await chain.write(ALICE, creature, "vote", [0n, true]);
   await chain.write(ALICE, nom, "transfer", [BOB, NOM(100)]);
   await chain.write(BOB, creature, "vote", [0n, true]);
 
   const p = await chain.read<any[]>(creature, "proposals", [0n]);
-  assert.equal(p[3], NOM(200)); // double-counted from one contribution
+  assert.equal(p[3], NOM(200)); // same-block transfer still double-counts
 });
 
 // ------------------------------------------------------------------------
 // Checkpoints
 // ------------------------------------------------------------------------
 
-test("checkpoint(): operator-only, and re-posting an already-recorded epoch is not rejected", async () => {
+test("checkpoint(): operator-only, and replaying an already-recorded epoch is rejected", async () => {
   await expectRevert(
     chain.write(ALICE, creature, "checkpoint", [1n, `0x${"11".repeat(32)}`, "run://1", 500n, USDC(1)]),
     "not operator"
@@ -369,10 +392,16 @@ test("checkpoint(): operator-only, and re-posting an already-recorded epoch is n
   assert.equal(cp.epoch, 1n);
   assert.equal(cp.lossMilli, 500n);
 
-  // Replaying epoch 1 (e.g. a retried tx, or an operator mistake) is
-  // currently accepted rather than rejected — there is no epoch-uniqueness
-  // guard. Documented here since it means the checkpoint history is not
-  // tamper-evident against reordering/duplication by the (trusted) operator.
-  await chain.write(OPERATOR, creature, "checkpoint", [1n, `0x${"22".repeat(32)}`, "run://1-again", 400n, USDC(1)]);
+  // Replaying epoch 1 (e.g. a retried tx, or an operator mistake) must now
+  // be rejected: epochs are required to strictly increase, so the on-chain
+  // checkpoint history stays tamper-evident against reordering/duplication.
+  await expectRevert(
+    chain.write(OPERATOR, creature, "checkpoint", [1n, `0x${"22".repeat(32)}`, "run://1-again", 400n, USDC(1)]),
+    "checkpoint: epoch must increase"
+  );
+  assert.equal(await chain.read(creature, "checkpointCount"), 1n);
+
+  // A strictly increasing epoch is accepted.
+  await chain.write(OPERATOR, creature, "checkpoint", [2n, `0x${"22".repeat(32)}`, "run://2", 400n, USDC(1)]);
   assert.equal(await chain.read(creature, "checkpointCount"), 2n);
 });
