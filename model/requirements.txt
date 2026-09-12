@@ -1,3 +1,10 @@
+# CPU-only wheel index first: plain `pip install torch` on Linux pulls the
+# CUDA build and its ~4GB of bundled nvidia-*/triton packages even though the
+# --tiny smoke-test path never touches a GPU. The +cpu wheel below has a
+# higher local version per PEP 440, so pip prefers it over the CUDA default
+# without needing an exact version pin -- the whole install stays under 1GB
+# and the README's "runs on a laptop with nothing to download" holds.
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.2
 numpy>=1.26
 huggingface_hub>=0.23  # optional, for open-weight releases
