@@ -388,6 +388,59 @@ test("getPastBalance refuses to answer for the current, still-mutable block", as
   );
 });
 
+test("a transfer landing in the block immediately before the proposal IS counted: the voting delay is exactly one block, not more", async () => {
+  // The snapshot block (block.number - 1) is already final by the time the
+  // proposal's own block runs, so a change in that exact prior block is
+  // legitimate history, not manipulation — it must still count.
+  await feedAs(ALICE, USDC(100));
+  chain.advance(1);
+  await chain.write(ALICE, nom, "transfer", [BOB, NOM(30)]); // lands in what becomes the snapshot block
+  chain.advance(1);
+  await chain.write(ALICE, creature, "propose", ["scale the reef"]);
+
+  await chain.write(BOB, creature, "vote", [0n, true]);
+  await chain.write(ALICE, creature, "vote", [0n, false]);
+
+  const p = await chain.read<any[]>(creature, "proposals", [0n]);
+  assert.equal(p[3], NOM(30)); // Bob's pre-proposal-block transfer counts
+  assert.equal(p[4], NOM(70)); // Alice's remaining balance counts
+});
+
+test("governance snapshot is keyed by block number, not wall-clock time", async () => {
+  // Mine new blocks without moving the clock at all, so a timestamp-based
+  // snapshot (the old, closed bug) and a block-number-based one would
+  // disagree here — proving the fix actually depends on block number.
+  await feedAs(ALICE, USDC(100)); // block 1
+  chain.mineBlock(); // block 2, same timestamp
+  await chain.write(ALICE, creature, "propose", ["scale the reef"]); // snapshotBlock = 1
+  chain.mineBlock(); // block 3, same timestamp as blocks 1-2
+  await feedAs(BOB, USDC(50)); // Bob's NOM checkpoint written at block 3
+
+  await chain.write(ALICE, creature, "vote", [0n, true]);
+  await expectRevert(chain.write(BOB, creature, "vote", [0n, true]), "vote: no NOM");
+
+  const p = await chain.read<any[]>(creature, "proposals", [0n]);
+  assert.equal(p[3], NOM(100)); // Bob's same-timestamp-but-later-block NOM is excluded
+});
+
+test("each proposal's snapshot is independent: a later proposal sees a later balance", async () => {
+  await feedAs(ALICE, USDC(100));
+  chain.advance(1);
+  await chain.write(ALICE, creature, "propose", ["proposal A"]); // snapshot: Alice has 100
+  chain.advance(1);
+  await feedAs(ALICE, USDC(50)); // Alice grows to 150 NOM
+  chain.advance(1);
+  await chain.write(ALICE, creature, "propose", ["proposal B"]); // snapshot: Alice has 150
+
+  await chain.write(ALICE, creature, "vote", [0n, true]);
+  await chain.write(ALICE, creature, "vote", [1n, true]);
+
+  const a = await chain.read<any[]>(creature, "proposals", [0n]);
+  const b = await chain.read<any[]>(creature, "proposals", [1n]);
+  assert.equal(a[3], NOM(100)); // proposal A's snapshot predates the second feed
+  assert.equal(b[3], NOM(150)); // proposal B's snapshot includes it
+});
+
 // ------------------------------------------------------------------------
 // Checkpoints
 // ------------------------------------------------------------------------

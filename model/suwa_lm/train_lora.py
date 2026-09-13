@@ -191,6 +191,11 @@ def main() -> None:
         "license_effective_after_days": cat.license_delay_days,
         "device": device.type,
         "deterministic": args.deterministic,
+        # Self-documenting for anyone reading the manifest directly (not just
+        # the README): "best_effort_warn_only" because torch.use_deterministic_
+        # algorithms runs with warn_only=True, so this is a request for bit
+        # reproducibility, not a guarantee of it. See model/README.md.
+        "deterministic_mode": "best_effort_warn_only" if args.deterministic else "none",
         "reproduce": (
             f"python3 suwa_lm/train_lora.py --character {character.id} "
             f"--epoch {args.epoch} --steps {args.steps} --seed {seed} "

@@ -416,6 +416,13 @@ export class Brain {
     // because epochs are always submitted sequentially, one per call,
     // starting at 1 — so if the chain already has at least `epoch` of them,
     // this exact epoch was recorded and only local state is stale.
+    // TODO(review): this assumes nothing ever calls checkpoint() out of band
+    // with the operator key (e.g. a manual patch via `cast send`) — the
+    // contract only requires epochs to strictly increase, not to be
+    // contiguous, so an out-of-band call would desync this count from "the
+    // last epoch this loop actually posted." No fund-safety impact either
+    // way; confirm against live operating practice before relying on this
+    // for anything stronger than crash-retry convenience.
     const onChainEpochs = (await this.creature.vitals()).epochs;
     if (onChainEpochs >= BigInt(epoch)) {
       console.warn(

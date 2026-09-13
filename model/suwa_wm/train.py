@@ -117,6 +117,11 @@ def main() -> None:
         "license": "Apache-2.0",
         "device": device.type,
         "deterministic": args.deterministic,
+        # Self-documenting for anyone reading the manifest directly (not just
+        # the README): "best_effort_warn_only" because torch.use_deterministic_
+        # algorithms runs with warn_only=True, so this is a request for bit
+        # reproducibility, not a guarantee of it. See model/README.md.
+        "deterministic_mode": "best_effort_warn_only" if args.deterministic else "none",
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"artifact {ckpt_path} sha256={sha256}")

@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 import { TestChain, artifact, type Deployed } from "./evm.js";
 import { config } from "../src/config.js";
-import { saveState } from "../src/state.js";
+import { loadState, saveState } from "../src/state.js";
 import { Brain, planEpoch, reconcileEarn, pickRecallVault } from "../src/brain.js";
 
 const OWNER = "0x1000000000000000000000000000000000000001";
@@ -162,6 +162,35 @@ test("manageTreasury(): harvests every vault above minimum (minting no NOM), far
     assert.equal(await chain.read(creature, "energy"), USDC(10));
   } finally {
     Object.assign(config, savedConfig);
+    rmSync(config.stateDir, { recursive: true, force: true });
+  }
+});
+
+test("trainEpoch(): an epoch already recorded on-chain is not retrained or resubmitted", async () => {
+  // Simulates the crash-retry window checkpoint()'s dedup guard closes: a
+  // previous run's checkpoint() landed on-chain (chain now has 3 epochs) but
+  // local state was never updated past epoch 2, so a naive resume would
+  // retrain epoch 3 for nothing and then have checkpoint() revert on-chain
+  // (epochs must strictly increase). trainEpoch() must instead recognize the
+  // chain is already ahead and just catch up local state.
+  try {
+    saveState({ epoch: 2 });
+
+    const brain = Object.create(Brain.prototype) as Brain;
+    (brain as any).creature = {
+      async vitals() {
+        return { epochs: 3n, mood: "HAPPY", satiety: 0n, energy: 0n, totalFed: 0n, totalComputeSpent: 0n };
+      },
+    };
+    // No provider/nextCharacter dependencies are set — if the skip path
+    // didn't return before touching them, this would throw.
+
+    await brain.trainEpoch(0n);
+
+    const state = loadState();
+    assert.equal(state.epoch, 3, "local state catches up to the on-chain count");
+    assert.equal(state.activeJob, undefined, "no job left dangling for an epoch that was never (re)started");
+  } finally {
     rmSync(config.stateDir, { recursive: true, force: true });
   }
 });
