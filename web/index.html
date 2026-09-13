@@ -165,6 +165,12 @@ async function loadConfig() {
 
 const err = (m) => (document.getElementById("err").textContent = m);
 const $ = (id) => document.getElementById(id);
+// Escape operator-controlled strings (e.g. a checkpoint's `uri`) before they
+// land inside a raw innerHTML template — a compromised operator key can post
+// any string on-chain, and it should not be able to break out of the
+// attribute it's interpolated into.
+const esc = (s) =>
+  s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 const cfg = await loadConfig();
 if (!cfg?.tomagachi) {
@@ -273,7 +279,7 @@ if (!cfg?.tomagachi) {
         rows.push(`<tr><td>${epoch}</td><td>${(Number(lossMilli) / 1000).toFixed(3)}</td>
           <td class="hash">${hash.slice(0, 18)}…</td>
           <td>$${formatUnits(cSpent, 6)}</td>
-          <td>${uri.startsWith("http") ? `<a href="${uri}">weights</a>` : ""}</td></tr>`);
+          <td>${uri.startsWith("http") ? `<a href="${esc(uri)}">weights</a>` : ""}</td></tr>`);
       }
       $("checkpoints").innerHTML =
         rows.join("") || `<tr><td colspan="5">no epochs yet — feed the creature to start training</td></tr>`;

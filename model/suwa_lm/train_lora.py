@@ -52,6 +52,11 @@ def main() -> None:
     ap.add_argument("--alpha", type=float, default=16.0)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="best-effort bit-reproducible run (slower; see model/README.md's determinism caveat)",
+    )
     ap.add_argument("--teacher-url", type=str, default=os.environ.get("TEACHER_URL"))
     ap.add_argument("--teacher-model", type=str, default=os.environ.get("TEACHER_MODEL", ""))
     ap.add_argument("--push", type=str, default=None, help="HF repo id for the open release")
@@ -61,6 +66,17 @@ def main() -> None:
     character = cat.get(args.character)
     out = Path(args.out or f"runs/{character.id}-epoch-{args.epoch}")
     out.mkdir(parents=True, exist_ok=True)
+
+    if args.deterministic:
+        # Must be set before any CUDA context init (the first .to(device) call
+        # below), or cuBLAS silently keeps its non-deterministic workspace.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        # warn_only: fall back to a warning rather than crashing training on
+        # an op with no deterministic kernel, since the base models this
+        # loads aren't audited for full deterministic-algorithm coverage.
+        torch.use_deterministic_algorithms(True, warn_only=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed = args.seed if args.seed is not None else args.epoch
@@ -173,11 +189,14 @@ def main() -> None:
         "file": "adapter.pt",
         "license": "Apache-2.0",
         "license_effective_after_days": cat.license_delay_days,
+        "device": device.type,
+        "deterministic": args.deterministic,
         "reproduce": (
             f"python3 suwa_lm/train_lora.py --character {character.id} "
             f"--epoch {args.epoch} --steps {args.steps} --seed {seed} "
             f"--examples {args.examples} --rank {args.rank} --alpha {args.alpha} --lr {args.lr}"
             + (" --tiny" if args.tiny else "")
+            + (" --deterministic" if args.deterministic else "")
             # `resume` may come from an explicit --resume or from auto-detecting
             # the previous epoch's adapter next to a *default* --out. Recording
             # the exact path here (instead of leaving it to be re-guessed) is

@@ -57,13 +57,18 @@ contract NomToken {
 
     address public immutable minter;
 
-    // Historical balance checkpoints, one per account, so governance can read
-    // a voter's balance as of a fixed point in time (the proposal's snapshot)
-    // instead of their live, transferable balance. Without this, one holder
-    // could vote, transfer the same NOM to a second address, and vote again
-    // with it, or mint fresh NOM mid-proposal and vote with it immediately.
+    // Historical balance checkpoints, one per account, indexed by block
+    // number (not timestamp) so governance can read a voter's balance as of
+    // a block that is already final by the time anyone can act on it.
+    // Without this, one holder could vote, transfer the same NOM to a second
+    // address, and vote again with it, or mint fresh NOM mid-proposal and
+    // vote with it immediately. Indexing by block number (with the voting
+    // delay applied in `Tomagachi.propose`) also closes the narrower
+    // same-block variant: a transfer landing in the exact block the proposal
+    // is created can never touch a checkpoint from a strictly earlier,
+    // already-mined block, no matter its position in that block's tx order.
     struct Checkpoint {
-        uint64 time;
+        uint64 blockNumber;
         uint256 balance;
     }
     mapping(address => Checkpoint[]) private checkpoints;
@@ -87,24 +92,28 @@ contract NomToken {
 
     function _writeCheckpoint(address account) internal {
         uint256 n = checkpoints[account].length;
-        if (n > 0 && checkpoints[account][n - 1].time == block.timestamp) {
+        if (n > 0 && checkpoints[account][n - 1].blockNumber == block.number) {
             checkpoints[account][n - 1].balance = balanceOf[account];
         } else {
-            checkpoints[account].push(Checkpoint(uint64(block.timestamp), balanceOf[account]));
+            checkpoints[account].push(Checkpoint(uint64(block.number), balanceOf[account]));
         }
     }
 
-    /// @notice Account's NOM balance at (or immediately before) `timestamp`.
-    function getPastBalance(address account, uint64 timestamp) external view returns (uint256) {
+    /// @notice Account's NOM balance at (or immediately before) `blockNumber`.
+    /// Only past blocks are answerable — the current, still-mutable block is
+    /// refused — so the result can never depend on transaction ordering
+    /// within a block that hasn't finished executing yet.
+    function getPastBalance(address account, uint64 blockNumber) external view returns (uint256) {
+        require(uint256(blockNumber) < block.number, "NOM: not yet determined");
         Checkpoint[] storage ckpts = checkpoints[account];
         uint256 n = ckpts.length;
-        if (n == 0 || ckpts[0].time > timestamp) return 0;
-        if (ckpts[n - 1].time <= timestamp) return ckpts[n - 1].balance;
+        if (n == 0 || ckpts[0].blockNumber > blockNumber) return 0;
+        if (ckpts[n - 1].blockNumber <= blockNumber) return ckpts[n - 1].balance;
         uint256 lo = 0;
         uint256 hi = n - 1;
         while (lo < hi) {
             uint256 mid = (lo + hi + 1) / 2;
-            if (ckpts[mid].time <= timestamp) lo = mid;
+            if (ckpts[mid].blockNumber <= blockNumber) lo = mid;
             else hi = mid - 1;
         }
         return ckpts[lo].balance;
@@ -224,7 +233,7 @@ contract Tomagachi {
         string direction;     // e.g. "scale the reef to 32x32", "add currents dataset"
         uint256 yes;
         uint256 no;
-        uint64 snapshotTime;  // NOM balances are weighed as of this moment, not live
+        uint64 snapshotBlock; // NOM balances are weighed as of this already-mined block
     }
     Proposal[] public proposals;
     mapping(uint256 => mapping(address => bool)) public voted;
@@ -520,6 +529,13 @@ contract Tomagachi {
 
     function propose(string calldata direction) external returns (uint256 id) {
         require(nom.balanceOf(msg.sender) >= PROPOSAL_THRESHOLD, "propose: need 10 NOM");
+        // One-block voting delay: snapshot the block *before* this one, which
+        // is already final by the time this transaction executes. No
+        // transaction in this proposal's own block — including this one, any
+        // transfer, or the first votes — can affect a checkpoint written for
+        // a block that was mined before it started. That's what closes the
+        // same-block manipulation a same-timestamp snapshot could not.
+        uint64 snapshotBlock = uint64(block.number - 1);
         proposals.push(
             Proposal(
                 msg.sender,
@@ -527,23 +543,23 @@ contract Tomagachi {
                 direction,
                 0,
                 0,
-                uint64(block.timestamp)
+                snapshotBlock
             )
         );
         id = proposals.length - 1;
         emit Proposed(id, msg.sender, direction);
     }
 
-    /// @notice Vote weight is the voter's NOM balance at proposal creation
-    /// time (`p.snapshotTime`), not their live balance — otherwise a single
-    /// holder could vote, transfer the same NOM to a second address, and
-    /// vote again with it, or feed USDC mid-vote to mint fresh NOM and use
-    /// it immediately.
+    /// @notice Vote weight is the voter's NOM balance as of the block before
+    /// the proposal was created (`p.snapshotBlock`), not their live balance —
+    /// otherwise a single holder could vote, transfer the same NOM to a
+    /// second address, and vote again with it, or feed USDC mid-vote to mint
+    /// fresh NOM and use it immediately.
     function vote(uint256 id, bool support) external {
         Proposal storage p = proposals[id];
         require(block.timestamp < p.deadline, "vote: closed");
         require(!voted[id][msg.sender], "vote: already");
-        uint256 weight = nom.getPastBalance(msg.sender, p.snapshotTime);
+        uint256 weight = nom.getPastBalance(msg.sender, p.snapshotBlock);
         require(weight > 0, "vote: no NOM");
         voted[id][msg.sender] = true;
         if (support) p.yes += weight;

@@ -164,6 +164,11 @@ creature starts paying for its own GPUs on-chain.
 - [x] Security hardening pass: contract reentrancy/CEI fixes, governance vote
       snapshotting, brain-loop crash/retry safety, model reproducibility fixes
       (see [Known limitations](#known-limitations) below for what's still open)
+- [x] Governance same-block gap closed: block-number-indexed NOM checkpoints
+      with a one-block voting delay (`agent/test/tomagachi.test.ts`)
+- [x] `checkpoint()` crash-retry safety: the brain checks on-chain epoch
+      count before retraining/resubmitting, instead of relying on the
+      contract's `epoch must increase` guard to fail loudly (`agent/src/brain.ts`)
 - [ ] Get listed: apply as a provider, first traffic, first dollar
 - [ ] Memory layer v2 — summarize sessions on the same GPU that serves them
 - [ ] Adapters for specific decentralized GPU markets (Akash, io.net, Nosana)
@@ -171,34 +176,15 @@ creature starts paying for its own GPUs on-chain.
 
 ## Known limitations
 
-Real, open items surfaced by a security/reliability review (2026-09) — not
-fixed because each needs a deliberate decision or more than a minimal patch,
-not because they were missed:
-
-- **Governance vote weight has a same-block gap.** `vote()` weighs NOM by the
-  voter's balance snapshotted at proposal creation, closing the ordinary
-  vote-then-transfer-then-vote-again exploit. But a transfer landing in the
-  *exact same block timestamp* as the proposal still double-counts, because
-  closing that fully needs block-number-indexed checkpoints with an enforced
-  voting delay (ERC20Votes-style) — a bigger change than a security patch
-  should make unilaterally. Pinned as a test
-  (`agent/test/tomagachi.test.ts`) so it can't silently regress further.
-  **Decide before NOM governance handles anything that matters.**
-- **`checkpoint()` has no on-chain epoch-uniqueness enforcement against a
-  narrow crash-retry window.** The brain won't re-buy compute or double-count
-  revenue on a crash mid-epoch (`planEpoch`/`reconcileEarn` in
-  `agent/src/brain.ts` guard both), but if `checkpoint()` itself lands
-  on-chain and then the receipt wait throws before local state clears, a
-  resumed epoch can re-submit a duplicate checkpoint entry. No funds move —
-  it's a data-integrity issue for the on-chain training history, not a
-  fund-safety one — left as a `TODO(review)` pending confirmation nothing
-  else calls `checkpoint()` out of band in live operation.
-- **The hash-reproducibility claim in [`model/README.md`](model/README.md)
-  is verified end to end only on the `--tiny` CPU smoke-test path.** GPU
-  backward-pass kernels aren't bit-deterministic by default and no
-  deterministic-algorithm flag is set in `suwa_lm/`, so a real (non-`--tiny`)
-  trained adapter likely reproduces to the same eval *score* on `reproduce`,
-  not necessarily the same `sha256`. Needs a GPU to verify and, if confirmed,
-  a caveat in `model/README.md` distinguishing the two paths.
+- **The hash-reproducibility claim in [`model/README.md`](model/README.md) is
+  verified end to end only on the `--tiny` CPU smoke-test path.** Both
+  training scripts now accept `--deterministic` (fixed cuDNN/cuBLAS settings
+  + `torch.use_deterministic_algorithms`, recorded in `manifest.json`), but
+  since the base models aren't audited for full deterministic-kernel
+  coverage, this is **implemented but not yet verified on a real GPU** —
+  there is none in this development environment to confirm it against. A real
+  (non-`--tiny`) trained adapter run without the flag should still reproduce
+  the released eval *score* on `reproduce`, but not necessarily the same
+  `sha256`. Needs a GPU to confirm `--deterministic` actually closes that gap.
 
 MIT (code) / Apache-2.0 (model weights).

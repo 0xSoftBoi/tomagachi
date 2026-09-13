@@ -183,6 +183,7 @@ test("earn() eats revenue: satiety and energy rise, NOM does not", async () => {
 test("governance: 10 NOM to propose, NOM-weighted votes, one vote each", async () => {
   await feedAs(ALICE, USDC(100));
   await feedAs(BOB, USDC(5)); // below the 10 NOM threshold
+  chain.advance(1); // NOM must be at least a block old to carry voting weight
 
   await expectRevert(
     chain.write(BOB, creature, "propose", ["train a pirate"]),
@@ -339,12 +340,13 @@ test("vote() rejects an address holding no NOM", async () => {
 
 test("governance weight is snapshotted at proposal creation: transferring NOM after voting cannot double-count it across blocks", async () => {
   // Alice feeds once (100 NOM), votes yes, then — in a *later* block — hands
-  // the same NOM to Bob. Bob's NOM balance at the proposal's snapshot time
+  // the same NOM to Bob. Bob's NOM balance at the proposal's snapshot block
   // (before any of this happened) is zero, so his vote must be rejected for
   // having no weight — proving the checkpoint-based snapshot closes the
   // double-count that was previously possible when vote() read a live,
   // transferable balance.
   await feedAs(ALICE, USDC(100));
+  chain.advance(1); // NOM must be at least a block old to carry voting weight
   await chain.write(ALICE, creature, "propose", ["scale the reef"]);
   chain.advance(1);
 
@@ -358,22 +360,32 @@ test("governance weight is snapshotted at proposal creation: transferring NOM af
   assert.equal(p[3], NOM(100)); // only Alice's original contribution counted
 });
 
-test("governance snapshot has a disclosed residual: a transfer landing in the exact same block timestamp as the proposal is inclusive", async () => {
-  // This is not a fix regression — it's the auditor's disclosed limitation,
-  // pinned as a test so it can't silently get worse. A real close requires
-  // block-number-indexed checkpoints with an enforced voting delay
-  // (Compound/OZ ERC20Votes-style), which this in-process harness pins
-  // block.number to 1 for every call and so cannot exercise.
+test("governance snapshot closes the same-block gap: a transfer landing in the exact block the proposal is created cannot double-count", async () => {
+  // The one-block voting delay (snapshotBlock = block.number - 1) means the
+  // snapshot is already final before this block's first transaction runs.
+  // Alice proposes, then — still in the *same* block — transfers her 100 NOM
+  // to Bob and both attempt to vote. Bob's balance one block before the
+  // proposal was zero, so his vote must be rejected regardless of what
+  // happens later in this same block.
   await feedAs(ALICE, USDC(100));
+  chain.advance(1); // Alice's NOM must predate the proposal's own block
   await chain.write(ALICE, creature, "propose", ["scale the reef"]);
-  // No chain.advance() here: propose, vote, and transfer all land at the
-  // same block.timestamp, so the checkpoint tie-break is inclusive.
-  await chain.write(ALICE, creature, "vote", [0n, true]);
+  // No chain.advance() from here: propose, transfer, and both votes all land
+  // in the same block. Only the snapshot block (one block earlier) matters.
   await chain.write(ALICE, nom, "transfer", [BOB, NOM(100)]);
-  await chain.write(BOB, creature, "vote", [0n, true]);
+  await chain.write(ALICE, creature, "vote", [0n, true]);
+  await expectRevert(chain.write(BOB, creature, "vote", [0n, true]), "vote: no NOM");
 
   const p = await chain.read<any[]>(creature, "proposals", [0n]);
-  assert.equal(p[3], NOM(200)); // same-block transfer still double-counts
+  assert.equal(p[3], NOM(100)); // same-block transfer no longer double-counts
+});
+
+test("getPastBalance refuses to answer for the current, still-mutable block", async () => {
+  await feedAs(ALICE, USDC(100));
+  await expectRevert(
+    chain.read(nom, "getPastBalance", [ALICE, chain.blockNumber]),
+    "NOM: not yet determined"
+  );
 });
 
 // ------------------------------------------------------------------------

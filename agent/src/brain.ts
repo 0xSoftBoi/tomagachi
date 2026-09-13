@@ -405,6 +405,29 @@ export class Brain {
   async trainEpoch(cost: bigint): Promise<void> {
     const state = loadState();
     const epoch = state.epoch + 1;
+
+    // Crash-retry safety for checkpoint() itself: if a previous attempt at
+    // this exact epoch landed the checkpoint() tx on-chain but then the
+    // receipt wait threw (RPC hiccup) before state.epoch cleared below, a
+    // naive retry would retrain for nothing and then have checkpoint()
+    // revert on-chain (epochs must strictly increase — see
+    // contracts/Tomagachi.sol), crashing the process instead of progressing.
+    // checkpoints.length is a reliable stand-in for "already checkpointed"
+    // because epochs are always submitted sequentially, one per call,
+    // starting at 1 — so if the chain already has at least `epoch` of them,
+    // this exact epoch was recorded and only local state is stale.
+    const onChainEpochs = (await this.creature.vitals()).epochs;
+    if (onChainEpochs >= BigInt(epoch)) {
+      console.warn(
+        `[checkpoint] epoch ${epoch} already recorded on-chain (resuming after a ` +
+          `crash before local state cleared) — skipping retrain, catching up local state`
+      );
+      state.epoch = epoch;
+      state.activeJob = undefined;
+      saveState(state);
+      return;
+    }
+
     const character = this.nextCharacter(epoch);
     const jobRef = character ? `${character}-epoch-${epoch}` : `suwa-wm-epoch-${epoch}`;
     const outDir = join(config.runsDir, jobRef);
@@ -445,20 +468,6 @@ export class Brain {
     const result = await this.provider.run({ epoch, steps, outDir, character });
 
     // 3. Checkpoint on-chain: hash of the open weights + where to get them.
-    // TODO(review): checkpoint() has no on-chain dedup on `epoch` (see
-    // contracts/Tomagachi.sol — it just pushes to an array), and unlike
-    // buyCompute this one isn't guarded by planEpoch(): if this exact call
-    // lands on-chain but the receipt wait throws (RPC hiccup) before
-    // state.epoch/activeJob are cleared below, the next tick resumes (skips
-    // re-buying compute, correctly) but *will* re-train and re-submit
-    // checkpoint() for the same epoch, posting a duplicate entry. No funds
-    // move here so it isn't a fund-safety bug, but it does corrupt the
-    // on-chain training history the README asks buyers to audit. A fix
-    // would compare `(await this.creature.vitals()).epochs` against `epoch`
-    // before posting (checkpoints.length as a stand-in for "already
-    // checkpointed") — left as a TODO rather than guessed at, since it
-    // assumes nothing else ever calls checkpoint() out of band, which needs
-    // confirming against how this is actually operated live.
     const uri = config.hfRepo
       ? `https://huggingface.co/${config.hfRepo}`
       : `run://${jobRef}`;

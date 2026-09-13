@@ -74,6 +74,20 @@ sha256sum adapter.pt        # must equal the modelHash in the on-chain Checkpoin
 # then re-run the command in manifest.json's `reproduce` field
 ```
 
+**What re-running actually proves depends on `manifest.json`'s `device` and
+`deterministic` fields.** On the `--tiny` CPU path this reproduces the exact
+`sha256`. On a real (non-`--tiny`) GPU run, backward-pass kernels are not
+bit-deterministic by default — re-running the `reproduce` command will match
+the released `score` but is not guaranteed to match the released `sha256`
+bit-for-bit. Pass `--deterministic` to opt into `torch.use_deterministic_algorithms`
+plus fixed cuDNN/cuBLAS settings for a best-effort bit-reproducible run (recorded
+as `"deterministic": true` in the manifest); it costs throughput, and because
+the base models here aren't audited for full deterministic-kernel coverage, it
+is **implemented but not yet verified end-to-end on a real GPU** — this repo
+has only confirmed it on the CPU `--tiny` path. Verifying it against a real
+training run, and tightening the guarantee for any op it can't cover
+deterministically, is open work — see the top-level README's Known limitations.
+
 `score = in_character_rate * (1 - break_rate)`, measured on held-out prompts with
 greedy decoding — no sampling, no wall-clock, no network — against the anchors
 the character defines for itself in `characters.json`. That makes the on-chain

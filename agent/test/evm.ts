@@ -41,6 +41,8 @@ export class TestChain {
   evm!: EVM;
   /** The suite's clock. Every call executes at this timestamp. */
   now = 1_800_000_000n;
+  /** The suite's block number. Every call executes in this block. */
+  blockNumber = 1n;
 
   static async create(): Promise<TestChain> {
     const chain = new TestChain();
@@ -48,15 +50,22 @@ export class TestChain {
     return chain;
   }
 
+  /** Advance the clock AND mine a new block — the common case. */
   advance(seconds: number | bigint): void {
     this.now += BigInt(seconds);
+    this.blockNumber += 1n;
+  }
+
+  /** Mine a new block without moving the clock: two blocks, same timestamp. */
+  mineBlock(): void {
+    this.blockNumber += 1n;
   }
 
   private block(): any {
     return {
       header: {
         timestamp: this.now,
-        number: 1n,
+        number: this.blockNumber,
         coinbase: createAddressFromString("0x0000000000000000000000000000000000000000"),
         difficulty: 0n,
         gasLimit: 30_000_000n,
