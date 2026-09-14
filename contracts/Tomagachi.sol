@@ -57,6 +57,22 @@ contract NomToken {
 
     address public immutable minter;
 
+    // Historical balance checkpoints, one per account, indexed by block
+    // number (not timestamp) so governance can read a voter's balance as of
+    // a block that is already final by the time anyone can act on it.
+    // Without this, one holder could vote, transfer the same NOM to a second
+    // address, and vote again with it, or mint fresh NOM mid-proposal and
+    // vote with it immediately. Indexing by block number (with the voting
+    // delay applied in `Tomagachi.propose`) also closes the narrower
+    // same-block variant: a transfer landing in the exact block the proposal
+    // is created can never touch a checkpoint from a strictly earlier,
+    // already-mined block, no matter its position in that block's tx order.
+    struct Checkpoint {
+        uint64 blockNumber;
+        uint256 balance;
+    }
+    mapping(address => Checkpoint[]) private checkpoints;
+
     event Transfer(address indexed from, address indexed to, uint256 value);
     event Approval(address indexed owner, address indexed spender, uint256 value);
 
@@ -70,7 +86,37 @@ contract NomToken {
         unchecked {
             balanceOf[to] += amount;
         }
+        _writeCheckpoint(to);
         emit Transfer(address(0), to, amount);
+    }
+
+    function _writeCheckpoint(address account) internal {
+        uint256 n = checkpoints[account].length;
+        if (n > 0 && checkpoints[account][n - 1].blockNumber == block.number) {
+            checkpoints[account][n - 1].balance = balanceOf[account];
+        } else {
+            checkpoints[account].push(Checkpoint(uint64(block.number), balanceOf[account]));
+        }
+    }
+
+    /// @notice Account's NOM balance at (or immediately before) `blockNumber`.
+    /// Only past blocks are answerable — the current, still-mutable block is
+    /// refused — so the result can never depend on transaction ordering
+    /// within a block that hasn't finished executing yet.
+    function getPastBalance(address account, uint64 blockNumber) external view returns (uint256) {
+        require(uint256(blockNumber) < block.number, "NOM: not yet determined");
+        Checkpoint[] storage ckpts = checkpoints[account];
+        uint256 n = ckpts.length;
+        if (n == 0 || ckpts[0].blockNumber > blockNumber) return 0;
+        if (ckpts[n - 1].blockNumber <= blockNumber) return ckpts[n - 1].balance;
+        uint256 lo = 0;
+        uint256 hi = n - 1;
+        while (lo < hi) {
+            uint256 mid = (lo + hi + 1) / 2;
+            if (ckpts[mid].blockNumber <= blockNumber) lo = mid;
+            else hi = mid - 1;
+        }
+        return ckpts[lo].balance;
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {
@@ -100,6 +146,8 @@ contract NomToken {
             balanceOf[from] -= amount;
             balanceOf[to] += amount;
         }
+        _writeCheckpoint(from);
+        _writeCheckpoint(to);
         emit Transfer(from, to, amount);
     }
 }
@@ -181,10 +229,11 @@ contract Tomagachi {
 
     struct Proposal {
         address proposer;
-        string direction;     // e.g. "scale the reef to 32x32", "add currents dataset"
         uint64 deadline;
+        string direction;     // e.g. "scale the reef to 32x32", "add currents dataset"
         uint256 yes;
         uint256 no;
+        uint64 snapshotBlock; // NOM balances are weighed as of this already-mined block
     }
     Proposal[] public proposals;
     mapping(uint256 => mapping(address => bool)) public voted;
@@ -218,6 +267,18 @@ contract Tomagachi {
     modifier onlyOperator() {
         require(msg.sender == operator, "not operator");
         _;
+    }
+
+    // Reentrancy guard for every external function that hands control to an
+    // owner-whitelisted (but not necessarily trustworthy) ERC-4626 vault, or
+    // to the stable token, before it is done updating state.
+    uint256 private _locked = 1;
+
+    modifier nonReentrant() {
+        require(_locked == 1, "reentrant");
+        _locked = 2;
+        _;
+        _locked = 1;
     }
 
     constructor(
@@ -274,13 +335,13 @@ contract Tomagachi {
     // --------------------------------------------------------------- feeding
 
     /// @notice Feed the creature USDC. Requires prior approval.
-    function feed(uint256 amount) external {
+    function feed(uint256 amount) external nonReentrant {
         _feed(msg.sender, msg.sender, amount);
     }
 
     /// @notice Feed on behalf of someone else (used by the brain when it
     /// converts arbitrary donated tokens to USDC via Suwappu).
-    function feedFor(address contributor, uint256 amount) external {
+    function feedFor(address contributor, uint256 amount) external nonReentrant {
         _feed(msg.sender, contributor, amount);
     }
 
@@ -315,7 +376,7 @@ contract Tomagachi {
         uint256 amount,
         string calldata provider,
         string calldata jobRef
-    ) external onlyOperator returns (uint256 id) {
+    ) external onlyOperator nonReentrant returns (uint256 id) {
         _metabolize();
         require(satietyStored > 0, "hibernating: feed me");
         require(amount > 0 && amount <= energy(), "compute: bad amount");
@@ -336,6 +397,10 @@ contract Tomagachi {
         uint256 lossMilli,
         uint256 computeSpent
     ) external onlyOperator {
+        require(
+            checkpoints.length == 0 || epoch > checkpoints[checkpoints.length - 1].epoch,
+            "checkpoint: epoch must increase"
+        );
         checkpoints.push(
             Checkpoint(uint64(block.timestamp), epoch, modelHash, uri, lossMilli, computeSpent)
         );
@@ -352,7 +417,7 @@ contract Tomagachi {
     /// call, invoiced routing) settled to the operating wallet and passed in.
     /// Like harvest, earnings raise satiety and mint NO NOM — customers are
     /// not contributors, and NOM stays strictly non-revenue-bearing.
-    function earn(uint256 amount, string calldata source) external onlyOperator {
+    function earn(uint256 amount, string calldata source) external onlyOperator nonReentrant {
         require(amount > 0, "earn: zero");
         require(stable.transferFrom(msg.sender, address(this), amount), "earn: transfer");
 
@@ -383,7 +448,7 @@ contract Tomagachi {
     /// @notice Park idle USDC in a whitelisted vault. Not spending — principal
     /// stays the creature's and is recallable via `divest` at any time — so
     /// unlike `buyCompute` this works even while hibernating.
-    function invest(address vault, uint256 amount) external onlyOperator {
+    function invest(address vault, uint256 amount) external onlyOperator nonReentrant {
         require(allowedVault[vault], "invest: vault not allowed");
         require(amount > 0 && amount <= stable.balanceOf(address(this)), "invest: bad amount");
 
@@ -398,7 +463,7 @@ contract Tomagachi {
     /// @notice Recall principal from a vault back into liquid compute budget.
     /// Harvest first if there is pending yield, so it is counted as earnings
     /// rather than blended silently into principal.
-    function divest(address vault, uint256 amount) external onlyOperator {
+    function divest(address vault, uint256 amount) external onlyOperator nonReentrant {
         uint256 p = principalOf[vault];
         require(amount > 0 && amount <= p, "divest: bad amount");
 
@@ -412,18 +477,24 @@ contract Tomagachi {
     /// @notice Withdraw everything a vault has earned above principal. The
     /// yield lands as liquid USDC (more compute budget) AND counts as food:
     /// satiety rises, no NOM is minted — the creature earned this itself.
-    function harvest(address vault) external onlyOperator returns (uint256 yieldAmount) {
+    function harvest(address vault) external onlyOperator nonReentrant returns (uint256 yieldAmount) {
         uint256 value = IERC4626(vault).convertToAssets(IERC4626(vault).balanceOf(address(this)));
         uint256 p = principalOf[vault];
         require(value > p, "harvest: nothing to harvest");
         yieldAmount = value - p;
 
+        // Effects before interaction: every state change this call makes is
+        // committed before the external withdraw() call, so a reentrant call
+        // back into the contract (from a malicious or compromised vault)
+        // observes fully up-to-date satiety/energy accounting rather than a
+        // stale, pre-harvest snapshot.
         totalYieldEarned += yieldAmount;
-        IERC4626(vault).withdraw(yieldAmount, address(this), address(this));
-
         _metabolize();
         satietyStored += yieldAmount;
         if (satietyStored > maxSatiety) satietyStored = maxSatiety;
+
+        IERC4626(vault).withdraw(yieldAmount, address(this), address(this));
+
         emit Harvested(vault, yieldAmount, satietyStored);
     }
 
@@ -431,8 +502,16 @@ contract Tomagachi {
     function investedAssets() public view returns (uint256 total) {
         for (uint256 i = 0; i < vaultList.length; i++) {
             IERC4626 v = IERC4626(vaultList[i]);
-            uint256 shares = v.balanceOf(address(this));
-            if (shares > 0) total += v.convertToAssets(shares);
+            // A single broken vault (paused, self-destructed, or otherwise
+            // reverting on these view calls) must not brick the aggregate
+            // read for every other vault's position.
+            try v.balanceOf(address(this)) returns (uint256 shares) {
+                if (shares > 0) {
+                    try v.convertToAssets(shares) returns (uint256 assets) {
+                        total += assets;
+                    } catch {}
+                }
+            } catch {}
         }
     }
 
@@ -450,18 +529,37 @@ contract Tomagachi {
 
     function propose(string calldata direction) external returns (uint256 id) {
         require(nom.balanceOf(msg.sender) >= PROPOSAL_THRESHOLD, "propose: need 10 NOM");
+        // One-block voting delay: snapshot the block *before* this one, which
+        // is already final by the time this transaction executes. No
+        // transaction in this proposal's own block — including this one, any
+        // transfer, or the first votes — can affect a checkpoint written for
+        // a block that was mined before it started. That's what closes the
+        // same-block manipulation a same-timestamp snapshot could not.
+        uint64 snapshotBlock = uint64(block.number - 1);
         proposals.push(
-            Proposal(msg.sender, direction, uint64(block.timestamp) + VOTING_PERIOD, 0, 0)
+            Proposal(
+                msg.sender,
+                uint64(block.timestamp) + VOTING_PERIOD,
+                direction,
+                0,
+                0,
+                snapshotBlock
+            )
         );
         id = proposals.length - 1;
         emit Proposed(id, msg.sender, direction);
     }
 
+    /// @notice Vote weight is the voter's NOM balance as of the block before
+    /// the proposal was created (`p.snapshotBlock`), not their live balance —
+    /// otherwise a single holder could vote, transfer the same NOM to a
+    /// second address, and vote again with it, or feed USDC mid-vote to mint
+    /// fresh NOM and use it immediately.
     function vote(uint256 id, bool support) external {
         Proposal storage p = proposals[id];
         require(block.timestamp < p.deadline, "vote: closed");
         require(!voted[id][msg.sender], "vote: already");
-        uint256 weight = nom.balanceOf(msg.sender);
+        uint256 weight = nom.getPastBalance(msg.sender, p.snapshotBlock);
         require(weight > 0, "vote: no NOM");
         voted[id][msg.sender] = true;
         if (support) p.yes += weight;
@@ -472,6 +570,7 @@ contract Tomagachi {
     // ----------------------------------------------------------------- admin
 
     function setOperator(address _operator) external onlyOwner {
+        require(_operator != address(0), "operator: zero");
         operator = _operator;
         emit OperatorChanged(_operator);
     }
@@ -483,6 +582,7 @@ contract Tomagachi {
     }
 
     function transferOwnership(address _owner) external onlyOwner {
+        require(_owner != address(0), "owner: zero");
         owner = _owner;
     }
 

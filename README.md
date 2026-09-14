@@ -161,9 +161,30 @@ creature starts paying for its own GPUs on-chain.
 - [x] x402 pay-per-call inference — revenue settles on Base and is eaten via `earn()`
 - [x] Telegram front-end: feed & check vitals in chat, on-chain drama broadcast live
 - [x] An EVM test suite (`agent/test/`) covering the whole metabolism
+- [x] Security hardening pass: contract reentrancy/CEI fixes, governance vote
+      snapshotting, brain-loop crash/retry safety, model reproducibility fixes
+      (see [Known limitations](#known-limitations) below for what's still open)
+- [x] Governance same-block gap closed: block-number-indexed NOM checkpoints
+      with a one-block voting delay (`agent/test/tomagachi.test.ts`)
+- [x] `checkpoint()` crash-retry safety: the brain checks on-chain epoch
+      count before retraining/resubmitting, instead of relying on the
+      contract's `epoch must increase` guard to fail loudly (`agent/src/brain.ts`)
 - [ ] Get listed: apply as a provider, first traffic, first dollar
 - [ ] Memory layer v2 — summarize sessions on the same GPU that serves them
 - [ ] Adapters for specific decentralized GPU markets (Akash, io.net, Nosana)
 - [ ] Scale the Reef by governance vote — the dream, when the shop can pay for it
+
+## Known limitations
+
+- **The hash-reproducibility claim in [`model/README.md`](model/README.md) is
+  verified end to end only on the `--tiny` CPU smoke-test path.** Both
+  training scripts now accept `--deterministic` (fixed cuDNN/cuBLAS settings
+  + `torch.use_deterministic_algorithms`, recorded in `manifest.json`), but
+  since the base models aren't audited for full deterministic-kernel
+  coverage, this is **implemented but not yet verified on a real GPU** —
+  there is none in this development environment to confirm it against. A real
+  (non-`--tiny`) trained adapter run without the flag should still reproduce
+  the released eval *score* on `reproduce`, but not necessarily the same
+  `sha256`. Needs a GPU to confirm `--deterministic` actually closes that gap.
 
 MIT (code) / Apache-2.0 (model weights).

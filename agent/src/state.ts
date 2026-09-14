@@ -7,6 +7,10 @@ export interface AgentState {
   suwappuAgentId?: string;
   epoch: number;
   activeJob?: { id: string; provider: string; startedAt: string; paidUsdc: string };
+  /** An earn() call whose outcome wasn't confirmed locally (crash/network
+   *  blip between the tx landing and the ledger being updated). Reconciled
+   *  against the chain on the next tick before any retry. */
+  pendingEarn?: { amount: string; revenueBefore: string };
   /** Per-vault share-price history (assets per 1e12 shares) for trailing APY. */
   vaultSamples?: Record<string, { t: number; ppsE12: string }[]>;
 }

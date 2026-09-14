@@ -42,10 +42,23 @@ def main() -> None:
     ap.add_argument("--resume", type=str, default=None, help="previous checkpoint.pt")
     ap.add_argument("--push", type=str, default=None, help="HF repo id, e.g. suwappu/suwa-wm")
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="best-effort bit-reproducible run (slower; see model/README.md's determinism caveat)",
+    )
     args = ap.parse_args()
 
     out = Path(args.out or f"runs/suwa-wm-epoch-{args.epoch}")
     out.mkdir(parents=True, exist_ok=True)
+
+    if args.deterministic:
+        # Must be set before any CUDA context init (the first .to(device)
+        # call below), or cuBLAS silently keeps its non-deterministic workspace.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed = args.seed if args.seed is not None else args.epoch
@@ -102,6 +115,13 @@ def main() -> None:
         "sha256": sha256,
         "file": "checkpoint.pt",
         "license": "Apache-2.0",
+        "device": device.type,
+        "deterministic": args.deterministic,
+        # Self-documenting for anyone reading the manifest directly (not just
+        # the README): "best_effort_warn_only" because torch.use_deterministic_
+        # algorithms runs with warn_only=True, so this is a request for bit
+        # reproducibility, not a guarantee of it. See model/README.md.
+        "deterministic_mode": "best_effort_warn_only" if args.deterministic else "none",
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"artifact {ckpt_path} sha256={sha256}")
